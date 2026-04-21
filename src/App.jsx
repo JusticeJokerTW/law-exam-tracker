@@ -17,13 +17,13 @@ function todayStr() { return new Date().toISOString().split("T")[0]; }
 function dayDiff(dateStr) { return Math.round((new Date(dateStr) - new Date(todayStr())) / 86400000); }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 
-// DB <-> UI 格式轉換
 function dbToIssue(row) {
   return {
     id: row.id, name: row.name, subject: row.subject,
     difficulty: row.difficulty, stage: row.stage, created: row.created,
     nextDate: row.next_date, lastReviewed: row.last_reviewed,
     mastered: row.mastered, errors: row.errors || [], related: row.related || [],
+    notes: row.notes || "", tags: row.tags || [],
   };
 }
 function issueToDb(i) {
@@ -32,6 +32,7 @@ function issueToDb(i) {
     difficulty: i.difficulty, stage: i.stage, created: i.created,
     next_date: i.nextDate, last_reviewed: i.lastReviewed,
     mastered: i.mastered, errors: i.errors || [], related: i.related || [],
+    notes: i.notes || "", tags: i.tags || [],
     updated_at: new Date().toISOString(),
   };
 }
@@ -40,6 +41,7 @@ const s = {
   bg:"#111318", surface:"#1a1d24", card:"#1f2330", border:"#2e3347",
   text:"#e8eaf0", muted:"#7b82a0", accent:"#5b6bff", accentMuted:"#1e2550",
   danger:"#e05252", dangerMuted:"#3d1a1a", success:"#3dba7a", successMuted:"#1a3d2d",
+  tagBg:"#2a2040", tagColor:"#b8a0ff",
 };
 
 const css = `
@@ -68,7 +70,6 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState("loading");
   const sessionStart = useRef(Date.now());
 
-  // 初次載入
   const load = useCallback(async () => {
     try {
       setSyncStatus("loading");
@@ -92,21 +93,18 @@ export default function App() {
 
   useEffect(() => {
     load();
-    // 即時同步：任何裝置變動都會推送到這裡
     const ch = supabase.channel("sync")
       .on("postgres_changes", { event: "*", schema: "public", table: "issues" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "study_log" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "settings" }, load)
       .subscribe();
-
     sessionStart.current = Date.now();
     return () => {
       ch.unsubscribe();
       const elapsed = Math.floor((Date.now() - sessionStart.current) / 60000);
       if (elapsed > 0) {
         const today = todayStr();
-        const next = (studyLog[today] || 0) + elapsed;
-        supabase.from("study_log").upsert({ date: today, minutes: next });
+        supabase.from("study_log").upsert({ date: today, minutes: (studyLog[today] || 0) + elapsed });
       }
     };
   }, [load]);
@@ -119,9 +117,7 @@ export default function App() {
     }
     return issue.nextDate;
   }
-  function isDueToday(issue) {
-    return !issue.mastered && issue.stage < 6 && getDueDate(issue) <= todayStr();
-  }
+  function isDueToday(issue) { return !issue.mastered && issue.stage < 6 && getDueDate(issue) <= todayStr(); }
 
   async function saveIssue(i) {
     setSyncStatus("saving");
@@ -131,42 +127,25 @@ export default function App() {
 
   async function markRemember(issue) {
     const ns = issue.stage + 1, mastered = ns >= 6;
-    const next = {
-      ...issue, stage: ns, lastReviewed: todayStr(),
-      nextDate: mastered ? null : calcNextDate(todayStr(), ns, issue.difficulty),
-      mastered,
-    };
+    const next = { ...issue, stage: ns, lastReviewed: todayStr(), nextDate: mastered ? null : calcNextDate(todayStr(), ns, issue.difficulty), mastered };
     setIssues(arr => arr.map(i => i.id === issue.id ? next : i));
     await saveIssue(next);
     const rel = (issues || []).filter(i => (issue.related||[]).includes(i.id));
     if (rel.length) setModal({ type: "related_remind", related: rel });
   }
-
   function markForgot(issue) { setModal({ type: "forgot", issue }); }
-
   async function confirmForgot(issue, reason) {
-    const next = {
-      ...issue, stage: 0, lastReviewed: todayStr(),
-      nextDate: calcNextDate(todayStr(), 0, issue.difficulty),
-      mastered: false,
-      errors: [...(issue.errors||[]), { date: todayStr(), reason }],
-    };
+    const next = { ...issue, stage: 0, lastReviewed: todayStr(), nextDate: calcNextDate(todayStr(), 0, issue.difficulty), mastered: false, errors: [...(issue.errors||[]), { date: todayStr(), reason }] };
     setIssues(arr => arr.map(i => i.id === issue.id ? next : i));
     await saveIssue(next);
     const rel = (issues || []).filter(i => (issue.related||[]).includes(i.id));
     setModal(rel.length ? { type: "related_remind", related: rel } : null);
   }
-
   async function addIssue(issue) {
-    const n = {
-      ...issue, id: uid(), created: todayStr(), stage: 0,
-      nextDate: calcNextDate(todayStr(), 0, issue.difficulty),
-      lastReviewed: null, mastered: false, errors: [], related: issue.related || [],
-    };
+    const n = { ...issue, id: uid(), created: todayStr(), stage: 0, nextDate: calcNextDate(todayStr(), 0, issue.difficulty), lastReviewed: null, mastered: false, errors: [], related: issue.related || [] };
     setIssues(arr => [...arr, n]);
     await saveIssue(n);
   }
-
   async function editIssue(id, changes) {
     const updated = issues.find(i => i.id === id);
     if (!updated) return;
@@ -174,14 +153,18 @@ export default function App() {
     setIssues(arr => arr.map(i => i.id === id ? next : i));
     await saveIssue(next);
   }
-
   async function deleteIssues(ids) {
     setIssues(arr => arr.filter(i => !ids.includes(i.id)));
     setSyncStatus("saving");
     const { error } = await supabase.from("issues").delete().in("id", ids);
     setSyncStatus(error ? "error" : "synced");
   }
-
+  async function deleteOneIssue(id) {
+    setIssues(arr => arr.filter(i => i.id !== id));
+    setSyncStatus("saving");
+    const { error } = await supabase.from("issues").delete().eq("id", id);
+    setSyncStatus(error ? "error" : "synced");
+  }
   async function toggleSprint() {
     const next = !sprintMode;
     setSprintMode(next);
@@ -189,6 +172,9 @@ export default function App() {
     const { error } = await supabase.from("settings").upsert({ key: "sprint_mode", value: next });
     setSyncStatus(error ? "error" : "synced");
   }
+
+  // 收集所有標籤
+  const allTags = [...new Set((issues || []).flatMap(i => i.tags || []))].sort();
 
   if (issues === null) {
     return (
@@ -207,7 +193,6 @@ export default function App() {
 
   const syncColor = syncStatus==="synced"?s.success:syncStatus==="saving"||syncStatus==="loading"?"#f0a840":s.danger;
   const syncLabel = syncStatus==="synced"?"● 已同步":syncStatus==="saving"?"● 儲存中":syncStatus==="loading"?"● 讀取中":"● 失敗";
-
   const todayDue = issues.filter(isDueToday);
   const todayMinutes = studyLog[todayStr()] || 0;
   const tabs = [{id:"dashboard",label:"首頁"},{id:"add",label:"新增"},{id:"overview",label:"總覽"},{id:"stats",label:"統計"}];
@@ -216,41 +201,23 @@ export default function App() {
     <>
       <style>{css}</style>
       <div style={{minHeight:"100vh",background:s.bg}}>
-        {sprintMode && (
-          <div style={{background:s.danger,color:"#fff",textAlign:"center",padding:"8px",fontWeight:600,fontSize:12}}>
-            ⚠ 考前衝刺模式已開啟｜所有未掌握爭點改為每 2 天複習一次
-          </div>
-        )}
+        {sprintMode && <div style={{background:s.danger,color:"#fff",textAlign:"center",padding:"8px",fontWeight:600,fontSize:12}}>⚠ 考前衝刺模式已開啟｜所有未掌握爭點改為每 2 天複習一次</div>}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",background:s.surface,borderBottom:`1px solid ${s.border}`,position:"sticky",top:0,zIndex:100,flexWrap:"wrap",gap:8}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontWeight:700,fontSize:14,color:s.text}}>⚖️ 司法考試複習</span>
             <span style={{fontSize:10,color:syncColor}}>{syncLabel}</span>
           </div>
           <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-            {tabs.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)} style={{
-                background:tab===t.id?s.accent:"transparent",
-                color:tab===t.id?"#fff":s.muted,
-                border:`1px solid ${tab===t.id?s.accent:s.border}`,
-                padding:"6px 12px",borderRadius:6,fontSize:13,
-              }}>{t.label}</button>
-            ))}
-            <button onClick={toggleSprint} style={{
-              background:sprintMode?s.danger:"transparent",
-              color:sprintMode?"#fff":s.muted,
-              border:`1px solid ${sprintMode?s.danger:s.border}`,
-              padding:"6px 12px",borderRadius:6,fontSize:13,
-            }}>{sprintMode?"衝刺中":"衝刺"}</button>
+            {tabs.map(t => <button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?s.accent:"transparent",color:tab===t.id?"#fff":s.muted,border:`1px solid ${tab===t.id?s.accent:s.border}`,padding:"6px 12px",borderRadius:6,fontSize:13}}>{t.label}</button>)}
+            <button onClick={toggleSprint} style={{background:sprintMode?s.danger:"transparent",color:sprintMode?"#fff":s.muted,border:`1px solid ${sprintMode?s.danger:s.border}`,padding:"6px 12px",borderRadius:6,fontSize:13}}>{sprintMode?"衝刺中":"衝刺"}</button>
           </div>
         </div>
-
         <div style={{padding:"16px",maxWidth:900,margin:"0 auto"}}>
           {tab==="dashboard" && <Dashboard issues={issues} todayDue={todayDue} studyLog={studyLog} todayMinutes={todayMinutes} markRemember={markRemember} markForgot={markForgot} getDueDate={getDueDate}/>}
-          {tab==="add" && <AddIssue issues={issues} onAdd={addIssue} setTab={setTab}/>}
-          {tab==="overview" && <Overview issues={issues} markRemember={markRemember} markForgot={markForgot} isDueToday={isDueToday} editIssue={editIssue} deleteIssues={deleteIssues}/>}
+          {tab==="add" && <AddIssue issues={issues} onAdd={addIssue} setTab={setTab} allTags={allTags}/>}
+          {tab==="overview" && <Overview issues={issues} markRemember={markRemember} markForgot={markForgot} isDueToday={isDueToday} editIssue={editIssue} deleteIssues={deleteIssues} deleteOneIssue={deleteOneIssue} allTags={allTags}/>}
           {tab==="stats" && <Stats issues={issues} studyLog={studyLog}/>}
         </div>
-
         {modal?.type==="forgot" && (
           <Overlay onClose={()=>setModal(null)}>
             <div style={{padding:20}}>
@@ -268,12 +235,20 @@ export default function App() {
             <div style={{padding:20}}>
               <div style={{fontWeight:600,marginBottom:10,fontSize:15}}>相關爭點提醒</div>
               <div style={{color:s.muted,marginBottom:12,fontSize:13}}>你也記得以下關聯爭點嗎？</div>
-              {modal.related.map(r => (
-                <div key={r.id} style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,padding:"9px 12px",marginBottom:8,fontSize:13}}>
-                  <span style={{color:s.accent}}>{r.subject}</span> · {r.name}
-                </div>
-              ))}
+              {modal.related.map(r => <div key={r.id} style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,padding:"9px 12px",marginBottom:8,fontSize:13}}><span style={{color:s.accent}}>{r.subject}</span> · {r.name}</div>)}
               <button onClick={()=>setModal(null)} style={{marginTop:12,background:s.accent,color:"#fff",width:"100%",padding:"10px"}}>了解</button>
+            </div>
+          </Overlay>
+        )}
+        {modal?.type==="confirm_delete" && (
+          <Overlay onClose={()=>setModal(null)}>
+            <div style={{padding:20}}>
+              <div style={{fontWeight:600,marginBottom:12,fontSize:15,color:s.danger}}>確認刪除</div>
+              <div style={{color:s.muted,marginBottom:14,fontSize:13}}>確定要刪除「{modal.issue.name}」嗎？此操作無法復原。</div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>{deleteOneIssue(modal.issue.id);setModal(null);}} style={{flex:1,background:s.danger,color:"#fff",padding:"10px"}}>確認刪除</button>
+                <button onClick={()=>setModal(null)} style={{flex:1,background:"transparent",color:s.muted,border:`1px solid ${s.border}`,padding:"10px"}}>取消</button>
+              </div>
             </div>
           </Overlay>
         )}
@@ -285,13 +260,45 @@ export default function App() {
 function Overlay({children,onClose}) {
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
-      <div style={{background:s.card,border:`1px solid ${s.border}`,borderRadius:12,minWidth:280,maxWidth:440,width:"100%"}} onClick={e=>e.stopPropagation()}>
-        {children}
-      </div>
+      <div style={{background:s.card,border:`1px solid ${s.border}`,borderRadius:12,minWidth:280,maxWidth:440,width:"100%"}} onClick={e=>e.stopPropagation()}>{children}</div>
     </div>
   );
 }
 
+// ── TagInput 元件 ──
+function TagInput({ tags, setTags, allTags }) {
+  const [input, setInput] = useState("");
+  const suggestions = input.length >= 1 ? allTags.filter(t => t.includes(input) && !tags.includes(t)) : [];
+  function addTag(t) {
+    const trimmed = t.trim();
+    if (trimmed && !tags.includes(trimmed)) setTags([...tags, trimmed]);
+    setInput("");
+  }
+  return (
+    <div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:6}}>
+        {tags.map(t => (
+          <span key={t} className="tag" style={{background:s.tagBg,color:s.tagColor,padding:"3px 8px"}}>
+            {t}<span onClick={()=>setTags(tags.filter(x=>x!==t))} style={{marginLeft:4,cursor:"pointer",opacity:.7}}>✕</span>
+          </span>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        <input value={input} onChange={e=>setInput(e.target.value)} placeholder="輸入標籤（例：實務見解）" onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addTag(input);}}} style={{flex:1}}/>
+        <button onClick={()=>addTag(input)} disabled={!input.trim()} style={{background:s.accent,color:"#fff",padding:"6px 12px",flexShrink:0,fontSize:12}}>加入</button>
+      </div>
+      {suggestions.length>0 && (
+        <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6}}>
+          {suggestions.slice(0,8).map(t => (
+            <span key={t} onClick={()=>addTag(t)} className="tag" style={{background:s.surface,color:s.muted,cursor:"pointer",padding:"3px 8px",border:`1px solid ${s.border}`}}>+ {t}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Dashboard ──
 function Dashboard({ issues, todayDue, studyLog, todayMinutes, markRemember, markForgot, getDueDate }) {
   const grouped = SUBJECTS.reduce((acc,sub)=>{const due=todayDue.filter(i=>i.subject===sub);if(due.length)acc[sub]=due;return acc;},{});
   const upcoming = issues.filter(i=>!i.mastered&&dayDiff(getDueDate(i))>0&&dayDiff(getDueDate(i))<=7).sort((a,b)=>getDueDate(a).localeCompare(getDueDate(b)));
@@ -308,13 +315,7 @@ function Dashboard({ issues, todayDue, studyLog, todayMinutes, markRemember, mar
           const total=issues.filter(i=>i.subject===sub).length;
           const done=issues.filter(i=>i.subject===sub&&i.mastered).length;
           const pct=total?Math.round(done/total*100):0;
-          return (
-            <div key={sub} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-              <span style={{width:50,fontSize:12,color:s.muted,flexShrink:0}}>{sub}</span>
-              <div className="prog" style={{flex:1}}><div className="progf" style={{width:`${pct}%`}}/></div>
-              <span style={{fontSize:11,color:s.muted,width:72,textAlign:"right"}}>{done}/{total} ({pct}%)</span>
-            </div>
-          );
+          return <div key={sub} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><span style={{width:50,fontSize:12,color:s.muted,flexShrink:0}}>{sub}</span><div className="prog" style={{flex:1}}><div className="progf" style={{width:`${pct}%`}}/></div><span style={{fontSize:11,color:s.muted,width:72,textAlign:"right"}}>{done}/{total} ({pct}%)</span></div>;
         })}
       </Sec>
       {Object.keys(grouped).length>0&&(
@@ -332,18 +333,7 @@ function Dashboard({ issues, todayDue, studyLog, todayMinutes, markRemember, mar
       {upcoming.length>0&&(
         <Sec title="未來 7 天即將到期">
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
-            {upcoming.map(i=>{
-              const d=dayDiff(getDueDate(i));
-              return (
-                <div key={i.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:s.surface,border:`1px solid ${s.border}`,borderRadius:6}}>
-                  <span style={{fontSize:13}}>{i.name}</span>
-                  <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
-                    <span className="tag" style={{background:s.accentMuted,color:s.accent}}>{i.subject}</span>
-                    <span style={{fontSize:11,color:s.muted}}>{d}天後</span>
-                  </div>
-                </div>
-              );
-            })}
+            {upcoming.map(i=>{const d=dayDiff(getDueDate(i));return <div key={i.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:s.surface,border:`1px solid ${s.border}`,borderRadius:6}}><span style={{fontSize:13}}>{i.name}</span><div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><span className="tag" style={{background:s.accentMuted,color:s.accent}}>{i.subject}</span><span style={{fontSize:11,color:s.muted}}>{d}天後</span></div></div>;})}
           </div>
         </Sec>
       )}
@@ -367,17 +357,20 @@ function IssueRow({issue,onRemember,onForgot}) {
   );
 }
 
-function AddIssue({issues,onAdd,setTab}) {
+// ── AddIssue ──
+function AddIssue({issues,onAdd,setTab,allTags}) {
   const [name,setName]=useState("");
   const [subject,setSubject]=useState(SUBJECTS[0]);
   const [difficulty,setDifficulty]=useState("中");
+  const [notes,setNotes]=useState("");
+  const [tags,setTags]=useState([]);
   const [search,setSearch]=useState("");
   const [related,setRelated]=useState([]);
   const results=search.length>=1?issues.filter(i=>(i.name.includes(search)||i.subject.includes(search))&&!related.includes(i.id)):[];
   function submit() {
     if(!name.trim()) return;
-    onAdd({name:name.trim(),subject,difficulty,related});
-    setName("");setRelated([]);setSearch("");setTab("overview");
+    onAdd({name:name.trim(),subject,difficulty,related,notes,tags});
+    setName("");setRelated([]);setSearch("");setNotes("");setTags([]);setTab("overview");
   }
   return (
     <div style={{maxWidth:520}}>
@@ -388,18 +381,12 @@ function AddIssue({issues,onAdd,setTab}) {
             <div><Lbl>科目</Lbl><select value={subject} onChange={e=>setSubject(e.target.value)}>{SUBJECTS.map(s=><option key={s}>{s}</option>)}</select></div>
             <div><Lbl>難度</Lbl><select value={difficulty} onChange={e=>setDifficulty(e.target.value)}>{["高","中","低"].map(d=><option key={d}>{d}</option>)}</select></div>
           </div>
+          <div><Lbl>筆記（要件、口訣、重點）</Lbl><textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={3} placeholder="記下關鍵要件或容易忘的點…" style={{resize:"vertical",fontSize:13}}/></div>
+          <div><Lbl>標籤</Lbl><TagInput tags={tags} setTags={setTags} allTags={allTags}/></div>
           <div>
             <Lbl>關聯爭點</Lbl>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜尋現有爭點…"/>
-            {results.length>0&&(
-              <div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,marginTop:4,maxHeight:160,overflowY:"auto"}}>
-                {results.slice(0,8).map(i=>(
-                  <div key={i.id} onClick={()=>{setRelated(r=>[...r,i.id]);setSearch("");}} style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${s.border}`,fontSize:13}}>
-                    <span style={{color:s.accent}}>{i.subject}</span> · {i.name}
-                  </div>
-                ))}
-              </div>
-            )}
+            {results.length>0&&<div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,marginTop:4,maxHeight:160,overflowY:"auto"}}>{results.slice(0,8).map(i=><div key={i.id} onClick={()=>{setRelated(r=>[...r,i.id]);setSearch("");}} style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${s.border}`,fontSize:13}}><span style={{color:s.accent}}>{i.subject}</span> · {i.name}</div>)}</div>}
             <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:6}}>
               {related.map(id=>{const i=issues.find(x=>x.id===id);if(!i)return null;return <span key={id} className="tag" style={{background:s.accentMuted,color:s.accent,padding:"3px 8px"}}>{i.name}<span onClick={()=>setRelated(r=>r.filter(x=>x!==id))} style={{marginLeft:4,cursor:"pointer",opacity:.7}}>✕</span></span>;})}
             </div>
@@ -415,35 +402,50 @@ function AddIssue({issues,onAdd,setTab}) {
   );
 }
 
-function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIssues}) {
+// ── Overview ──
+function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIssues,deleteOneIssue,allTags}) {
   const [subFilter,setSubFilter]=useState("全部");
   const [statusFilter,setStatusFilter]=useState("全部");
+  const [tagFilter,setTagFilter]=useState("全部");
+  const [searchQuery,setSearchQuery]=useState("");
   const [editingId,setEditingId]=useState(null);
   const [selected,setSelected]=useState(new Set());
   const [deleteMode,setDeleteMode]=useState(false);
+
   let filtered=issues;
   if(subFilter!=="全部") filtered=filtered.filter(i=>i.subject===subFilter);
   if(statusFilter==="今日待複習") filtered=filtered.filter(isDueToday);
   else if(statusFilter==="進行中") filtered=filtered.filter(i=>!i.mastered&&!isDueToday(i));
   else if(statusFilter==="已掌握") filtered=filtered.filter(i=>i.mastered);
+  if(tagFilter!=="全部") filtered=filtered.filter(i=>(i.tags||[]).includes(tagFilter));
+  if(searchQuery.trim()) {
+    const q=searchQuery.trim().toLowerCase();
+    filtered=filtered.filter(i=>i.name.toLowerCase().includes(q)||i.subject.includes(q)||(i.notes||"").toLowerCase().includes(q)||(i.tags||[]).some(t=>t.includes(q)));
+  }
+
   function toggleSelect(id){setSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n;});}
   function selectAll(){if(selected.size===filtered.length)setSelected(new Set());else setSelected(new Set(filtered.map(i=>i.id)));}
   function confirmDelete(){deleteIssues([...selected]);setSelected(new Set());setDeleteMode(false);}
+
   return (
     <div>
-      <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
-        <select value={subFilter} onChange={e=>setSubFilter(e.target.value)} style={{width:"auto"}}><option>全部</option>{SUBJECTS.map(s=><option key={s}>{s}</option>)}</select>
-        <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)} style={{width:"auto"}}>{["全部","今日待複習","進行中","已掌握"].map(s=><option key={s}>{s}</option>)}</select>
-        <span style={{fontSize:12,color:s.muted}}>共 {filtered.length} 筆</span>
-        <div style={{marginLeft:"auto"}}>
-          {!deleteMode
-            ? <button onClick={()=>setDeleteMode(true)} style={{background:"transparent",color:s.danger,border:`1px solid ${s.danger}`,fontSize:12,padding:"6px 10px"}}>勾選刪除</button>
-            : <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                <button onClick={selectAll} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:12,padding:"6px 9px"}}>{selected.size===filtered.length?"取消全選":"全選"}</button>
-                <button onClick={confirmDelete} disabled={selected.size===0} style={{background:s.danger,color:"#fff",fontSize:12,padding:"6px 10px"}}>刪除{selected.size>0?` (${selected.size})`:""}</button>
-                <button onClick={()=>{setSelected(new Set());setDeleteMode(false);}} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:12,padding:"6px 9px"}}>取消</button>
-              </div>
-          }
+      <div style={{marginBottom:12}}>
+        <input value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} placeholder="🔍 搜尋爭點名稱、筆記、標籤…" style={{marginBottom:10}}/>
+        <div style={{display:"flex",gap:7,flexWrap:"wrap",alignItems:"center"}}>
+          <select value={subFilter} onChange={e=>setSubFilter(e.target.value)} style={{width:"auto"}}><option>全部</option>{SUBJECTS.map(s=><option key={s}>{s}</option>)}</select>
+          <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)} style={{width:"auto"}}>{["全部","今日待複習","進行中","已掌握"].map(s=><option key={s}>{s}</option>)}</select>
+          {allTags.length>0 && <select value={tagFilter} onChange={e=>setTagFilter(e.target.value)} style={{width:"auto"}}><option>全部</option>{allTags.map(t=><option key={t}>{t}</option>)}</select>}
+          <span style={{fontSize:12,color:s.muted}}>共 {filtered.length} 筆</span>
+          <div style={{marginLeft:"auto"}}>
+            {!deleteMode
+              ? <button onClick={()=>setDeleteMode(true)} style={{background:"transparent",color:s.danger,border:`1px solid ${s.danger}`,fontSize:12,padding:"6px 10px"}}>批量刪除</button>
+              : <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <button onClick={selectAll} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:12,padding:"6px 9px"}}>{selected.size===filtered.length?"取消全選":"全選"}</button>
+                  <button onClick={confirmDelete} disabled={selected.size===0} style={{background:s.danger,color:"#fff",fontSize:12,padding:"6px 10px"}}>刪除{selected.size>0?` (${selected.size})`:""}</button>
+                  <button onClick={()=>{setSelected(new Set());setDeleteMode(false);}} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:12,padding:"6px 9px"}}>取消</button>
+                </div>
+            }
+          </div>
         </div>
       </div>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -451,7 +453,8 @@ function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIss
           <IssueCard key={issue.id} issue={issue} issues={issues} isDue={isDueToday(issue)}
             onRemember={markRemember} onForgot={markForgot}
             editing={editingId===issue.id} setEditing={setEditingId} editIssue={editIssue}
-            deleteMode={deleteMode} selected={selected.has(issue.id)} onToggleSelect={()=>toggleSelect(issue.id)}/>
+            deleteMode={deleteMode} selected={selected.has(issue.id)} onToggleSelect={()=>toggleSelect(issue.id)}
+            onDelete={deleteOneIssue} allTags={allTags} setModal={null}/>
         ))}
         {filtered.length===0&&<div style={{color:s.muted,textAlign:"center",padding:40}}>沒有符合條件的爭點</div>}
       </div>
@@ -459,14 +462,22 @@ function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIss
   );
 }
 
-function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,editIssue,deleteMode,selected,onToggleSelect}) {
+// ── IssueCard ──
+function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,editIssue,deleteMode,selected,onToggleSelect,onDelete,allTags}) {
   const [editDiff,setEditDiff]=useState(issue.difficulty);
+  const [editNotes,setEditNotes]=useState(issue.notes||"");
+  const [editTags,setEditTags]=useState(issue.tags||[]);
   const [editRelSearch,setEditRelSearch]=useState("");
   const [editRel,setEditRel]=useState(issue.related||[]);
+  const [showNotes,setShowNotes]=useState(false);
+  const [confirmDel,setConfirmDel]=useState(false);
   const intervals=getIntervals(issue.difficulty);
   const related=issues.filter(i=>(issue.related||[]).includes(i.id));
   const relSearch=editRelSearch.length>=1?issues.filter(i=>(i.name.includes(editRelSearch)||i.subject.includes(editRelSearch))&&i.id!==issue.id&&!editRel.includes(i.id)):[];
-  function saveEdit(){editIssue(issue.id,{difficulty:editDiff,related:editRel});setEditing(null);}
+
+  function saveEdit(){editIssue(issue.id,{difficulty:editDiff,related:editRel,notes:editNotes,tags:editTags});setEditing(null);}
+  function startEdit(){setEditDiff(issue.difficulty);setEditNotes(issue.notes||"");setEditTags(issue.tags||[]);setEditRel(issue.related||[]);setEditing(issue.id);}
+
   return (
     <div style={{background:selected?s.dangerMuted:s.card,border:`1px solid ${selected?s.danger:isDue?s.danger:s.border}`,borderRadius:8,padding:"13px 15px",transition:"background .15s"}}>
       <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
@@ -480,8 +491,22 @@ function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,ed
               {issue.mastered&&<span className="tag" style={{marginLeft:3,background:s.successMuted,color:s.success}}>已掌握</span>}
               {isDue&&!issue.mastered&&<span className="tag" style={{marginLeft:3,background:s.dangerMuted,color:s.danger}}>今日到期</span>}
             </div>
-            {!deleteMode&&<button onClick={()=>setEditing(editing?null:issue.id)} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:11,padding:"3px 8px",flexShrink:0}}>編輯</button>}
+            {!deleteMode&&(
+              <div style={{display:"flex",gap:4}}>
+                <button onClick={()=>editing?setEditing(null):startEdit()} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:11,padding:"3px 8px",flexShrink:0}}>編輯</button>
+                <button onClick={()=>setConfirmDel(true)} style={{background:"transparent",color:s.danger,border:`1px solid ${s.danger}`,fontSize:11,padding:"3px 8px",flexShrink:0}}>刪除</button>
+              </div>
+            )}
           </div>
+
+          {/* 標籤 */}
+          {(issue.tags||[]).length>0&&(
+            <div style={{marginBottom:7,display:"flex",flexWrap:"wrap",gap:4}}>
+              {issue.tags.map(t=><span key={t} className="tag" style={{background:s.tagBg,color:s.tagColor}}>{t}</span>)}
+            </div>
+          )}
+
+          {/* 進度條 */}
           <div style={{marginBottom:9}}>
             <div style={{display:"flex",gap:3,marginBottom:4}}>{intervals.map((_,idx)=><div key={idx} style={{flex:1,height:5,borderRadius:3,background:idx<issue.stage?s.accent:s.border}}/>)}</div>
             <div style={{fontSize:11,color:s.muted}}>
@@ -489,27 +514,56 @@ function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,ed
               {!issue.mastered&&issue.nextDate&&` · 下次：${issue.nextDate}（${dayDiff(issue.nextDate)===0?"今天":dayDiff(issue.nextDate)>0?`${dayDiff(issue.nextDate)}天後`:`逾期${-dayDiff(issue.nextDate)}天`}）`}
             </div>
           </div>
+
+          {/* 筆記 */}
+          {(issue.notes||"").trim()&&(
+            <div style={{marginBottom:8}}>
+              <span onClick={()=>setShowNotes(!showNotes)} style={{fontSize:11,color:s.accent,cursor:"pointer"}}>{showNotes?"▼ 收起筆記":"▶ 查看筆記"}</span>
+              {showNotes&&<div style={{marginTop:4,background:s.surface,borderRadius:5,padding:"8px 10px",fontSize:12,color:s.text,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{issue.notes}</div>}
+            </div>
+          )}
+
+          {/* 關聯 */}
           {related.length>0&&<div style={{marginBottom:7}}><span style={{fontSize:11,color:s.muted}}>關聯：</span>{related.map(r=><span key={r.id} className="tag" style={{marginLeft:4,background:s.accentMuted,color:s.accent,fontSize:11}}>{r.name}</span>)}</div>}
+
+          {/* 錯誤紀錄 */}
           {(issue.errors||[]).length>0&&(
             <div style={{marginBottom:8,background:s.surface,borderRadius:5,padding:"8px 10px"}}>
               <div style={{fontSize:10,color:s.muted,marginBottom:3}}>錯誤紀錄</div>
               {issue.errors.map((e,idx)=><div key={idx} style={{fontSize:11,color:s.danger}}>{e.date} · {e.reason}</div>)}
             </div>
           )}
+
+          {/* 編輯面板 */}
           {editing&&(
-            <div style={{borderTop:`1px solid ${s.border}`,paddingTop:10,marginBottom:8}}>
-              <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}><Lbl>難度</Lbl><select value={editDiff} onChange={e=>setEditDiff(e.target.value)} style={{width:"auto"}}>{["高","中","低"].map(d=><option key={d}>{d}</option>)}</select></div>
+            <div style={{borderTop:`1px solid ${s.border}`,paddingTop:12,marginBottom:8}}>
+              <div style={{display:"flex",gap:8,marginBottom:10,alignItems:"center"}}><Lbl>難度</Lbl><select value={editDiff} onChange={e=>setEditDiff(e.target.value)} style={{width:"auto"}}>{["高","中","低"].map(d=><option key={d}>{d}</option>)}</select></div>
+              <div style={{marginBottom:10}}><Lbl>筆記</Lbl><textarea value={editNotes} onChange={e=>setEditNotes(e.target.value)} rows={3} style={{resize:"vertical",fontSize:13}}/></div>
+              <div style={{marginBottom:10}}><Lbl>標籤</Lbl><TagInput tags={editTags} setTags={setEditTags} allTags={allTags}/></div>
               <Lbl>關聯爭點</Lbl>
               <input value={editRelSearch} onChange={e=>setEditRelSearch(e.target.value)} placeholder="搜尋…" style={{marginBottom:6}}/>
               {relSearch.length>0&&<div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:5,marginBottom:6,maxHeight:120,overflowY:"auto"}}>{relSearch.slice(0,5).map(i=><div key={i.id} onClick={()=>{setEditRel(r=>[...r,i.id]);setEditRelSearch("");}} style={{padding:"7px 10px",cursor:"pointer",fontSize:12}}>{i.subject} · {i.name}</div>)}</div>}
               <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>{editRel.map(id=>{const i=issues.find(x=>x.id===id);if(!i)return null;return <span key={id} className="tag" style={{background:s.accentMuted,color:s.accent,fontSize:11}}>{i.name}<span onClick={()=>setEditRel(r=>r.filter(x=>x!==id))} style={{marginLeft:3,cursor:"pointer",opacity:.7}}>✕</span></span>;})}</div>
-              <button onClick={saveEdit} style={{background:s.accent,color:"#fff",fontSize:12,padding:"7px 14px"}}>儲存</button>
+              <button onClick={saveEdit} style={{background:s.accent,color:"#fff",fontSize:13,padding:"8px 16px"}}>儲存變更</button>
             </div>
           )}
+
+          {/* 記住/沒熟 */}
           {isDue&&!issue.mastered&&!deleteMode&&(
             <div style={{display:"flex",gap:7,marginTop:6}}>
               <button onClick={()=>onRemember(issue)} style={{flex:1,background:s.successMuted,color:s.success,padding:"8px"}}>✓ 記住了</button>
               <button onClick={()=>onForgot(issue)} style={{flex:1,background:s.dangerMuted,color:s.danger,padding:"8px"}}>✗ 還沒熟</button>
+            </div>
+          )}
+
+          {/* 單個刪除確認 */}
+          {confirmDel&&(
+            <div style={{marginTop:8,background:s.dangerMuted,border:`1px solid ${s.danger}`,borderRadius:6,padding:"10px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:12,color:s.danger}}>確定刪除此爭點？</span>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>{onDelete(issue.id);}} style={{background:s.danger,color:"#fff",fontSize:12,padding:"5px 10px"}}>確認</button>
+                <button onClick={()=>setConfirmDel(false)} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:12,padding:"5px 10px"}}>取消</button>
+              </div>
             </div>
           )}
         </div>
@@ -518,6 +572,7 @@ function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,ed
   );
 }
 
+// ── Stats ──
 function Stats({issues,studyLog}) {
   const last30=Array.from({length:30},(_,i)=>{const d=new Date();d.setDate(d.getDate()-29+i);const key=d.toISOString().split("T")[0];return{date:key,mins:studyLog[key]||0};});
   const maxMins=Math.max(...last30.map(d=>d.mins),1);
@@ -532,7 +587,7 @@ function Stats({issues,studyLog}) {
           const total=issues.filter(i=>i.subject===sub).length;
           const done=issues.filter(i=>i.subject===sub&&i.mastered).length;
           const pct=total?Math.round(done/total*100):0;
-          return (<div key={sub} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><span style={{width:50,fontSize:12,color:s.muted,flexShrink:0}}>{sub}</span><div className="prog" style={{flex:1}}><div className="progf" style={{width:`${pct}%`,background:pct===100?s.success:s.accent}}/></div><span style={{fontSize:11,color:s.muted,width:80,textAlign:"right"}}>{done}/{total}（{pct}%）</span></div>);
+          return <div key={sub} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><span style={{width:50,fontSize:12,color:s.muted,flexShrink:0}}>{sub}</span><div className="prog" style={{flex:1}}><div className="progf" style={{width:`${pct}%`,background:pct===100?s.success:s.accent}}/></div><span style={{fontSize:11,color:s.muted,width:80,textAlign:"right"}}>{done}/{total}（{pct}%）</span></div>;
         })}
       </Sec>
       <Sec title="每日複習時間（近 30 天）">
