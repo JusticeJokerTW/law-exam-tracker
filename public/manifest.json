@@ -1,0 +1,15 @@
+{
+  "name": "司法考試複習追蹤器",
+  "short_name": "司考複習",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect fill='%235b6bff' width='512' height='512' rx='80'/%3E%3Ctext x='50%25' y='62%25' font-size='320' text-anchor='middle' fill='white'%3E⚖%3C/text%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
