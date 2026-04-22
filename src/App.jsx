@@ -324,7 +324,7 @@ function Dashboard({ issues, todayDue, studyLog, todayMinutes, markRemember, mar
             <div key={sub} style={{marginBottom:14}}>
               <div style={{fontSize:12,fontWeight:600,color:s.accent,marginBottom:6}}>{sub}</div>
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {list.map(i=><IssueRow key={i.id} issue={i} onRemember={markRemember} onForgot={markForgot}/>)}
+                {list.map(i=><IssueRow key={i.id} issue={i} onRemember={markRemember} onForgot={markForgot} issues={issues}/>)}
               </div>
             </div>
           ))}
