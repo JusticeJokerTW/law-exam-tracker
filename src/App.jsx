@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "./supabase.js";
 
-const SUBJECTS = ["民法","刑法","行政法","民訴","刑訴","憲法","公司法","保險法","證交法","財稅法"];
+const SUBJECTS = ["憲法","行政法","民法","民訴","刑法","刑訴","公司法","證交法","保險法","財稅法"];
 const INTERVALS = [3,7,14,21,30,90];
 const HARD_INTERVALS = [1,3,7,10,15,45];
 const FAIL_REASONS = ["完全忘記","要件不完整","與其他爭點混淆","其他"];
