@@ -472,7 +472,7 @@ function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,ed
   const [showNotes,setShowNotes]=useState(false);
   const [confirmDel,setConfirmDel]=useState(false);
   const intervals=getIntervals(issue.difficulty);
-  const related=issues.filter(i=>(issue.related||[]).includes(i.id));
+  const related=issues.filter(i=> (issue.related||[]).includes(i.id) || (i.related||[]).includes(issue.id) ).filter(i=>i.id!==issue.id);
   const relSearch=editRelSearch.length>=1?issues.filter(i=>(i.name.includes(editRelSearch)||i.subject.includes(editRelSearch))&&i.id!==issue.id&&!editRel.includes(i.id)):[];
 
   function saveEdit(){editIssue(issue.id,{difficulty:editDiff,related:editRel,notes:editNotes,tags:editTags});setEditing(null);}
