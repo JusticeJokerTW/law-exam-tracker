@@ -341,18 +341,31 @@ function Dashboard({ issues, todayDue, studyLog, todayMinutes, markRemember, mar
   );
 }
 
-function IssueRow({issue,onRemember,onForgot}) {
+function IssueRow({issue,onRemember,onForgot,issues}) {
+  const [expanded,setExpanded]=useState(false);
+  const related=(issues||[]).filter(i=> (issue.related||[]).includes(i.id) || (i.related||[]).includes(issue.id) ).filter(i=>i.id!==issue.id);
   return (
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,gap:8,flexWrap:"wrap"}}>
-      <div style={{flex:1,minWidth:0}}>
-        <span style={{fontSize:13,fontWeight:500}}>{issue.name}</span>
-        <span className="tag" style={{marginLeft:6,background:s.accentMuted,color:s.accent}}>{issue.subject}</span>
-        <span className="tag" style={{marginLeft:4,background:"transparent",color:DIFFICULTY_COLORS[issue.difficulty],border:`1px solid ${DIFFICULTY_COLORS[issue.difficulty]}`,fontSize:10}}>{issue.difficulty}</span>
+    <div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",gap:8,flexWrap:"wrap"}}>
+        <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>setExpanded(!expanded)}>
+          <span style={{fontSize:13,fontWeight:500}}>{issue.name}</span>
+          <span className="tag" style={{marginLeft:6,background:s.accentMuted,color:s.accent}}>{issue.subject}</span>
+          <span className="tag" style={{marginLeft:4,background:"transparent",color:DIFFICULTY_COLORS[issue.difficulty],border:`1px solid ${DIFFICULTY_COLORS[issue.difficulty]}`,fontSize:10}}>{issue.difficulty}</span>
+          {((issue.notes||"").trim()||(issue.tags||[]).length>0||related.length>0)&&<span style={{marginLeft:6,fontSize:10,color:s.muted}}>{expanded?"▼":"▶"}</span>}
+        </div>
+        <div style={{display:"flex",gap:6,flexShrink:0}}>
+          <button onClick={()=>onRemember(issue)} style={{background:s.successMuted,color:s.success,fontSize:12,padding:"6px 10px"}}>記住了</button>
+          <button onClick={()=>onForgot(issue)} style={{background:s.dangerMuted,color:s.danger,fontSize:12,padding:"6px 10px"}}>還沒熟</button>
+        </div>
       </div>
-      <div style={{display:"flex",gap:6,flexShrink:0}}>
-        <button onClick={()=>onRemember(issue)} style={{background:s.successMuted,color:s.success,fontSize:12,padding:"6px 10px"}}>記住了</button>
-        <button onClick={()=>onForgot(issue)} style={{background:s.dangerMuted,color:s.danger,fontSize:12,padding:"6px 10px"}}>還沒熟</button>
-      </div>
+      {expanded&&(
+        <div style={{padding:"0 12px 10px",borderTop:`1px solid ${s.border}`}}>
+          {(issue.tags||[]).length>0&&<div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4}}>{issue.tags.map(t=><span key={t} className="tag" style={{background:s.tagBg,color:s.tagColor}}>{t}</span>)}</div>}
+          {(issue.notes||"").trim()&&<div style={{marginTop:8,background:s.card,borderRadius:5,padding:"8px 10px",fontSize:12,color:s.text,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{issue.notes}</div>}
+          {related.length>0&&<div style={{marginTop:8}}><span style={{fontSize:11,color:s.muted}}>關聯：</span>{related.map(r=><span key={r.id} className="tag" style={{marginLeft:4,background:s.accentMuted,color:s.accent,fontSize:11}}>{r.name}</span>)}</div>}
+          {(issue.errors||[]).length>0&&<div style={{marginTop:8,background:s.card,borderRadius:5,padding:"7px 10px"}}><div style={{fontSize:10,color:s.muted,marginBottom:3}}>錯誤紀錄</div>{issue.errors.map((e,idx)=><div key={idx} style={{fontSize:11,color:s.danger}}>{e.date} · {e.reason}</div>)}</div>}
+        </div>
+      )}
     </div>
   );
 }
