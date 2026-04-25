@@ -23,9 +23,29 @@ function dbToIssue(row) {
 function issueToDb(i) {
   return { id:i.id, name:i.name, subject:i.subject, difficulty:i.difficulty, stage:i.stage, created:i.created, next_date:i.nextDate, last_reviewed:i.lastReviewed, mastered:i.mastered, errors:i.errors||[], related:i.related||[], notes:i.notes||"", tags:i.tags||[], updated_at:new Date().toISOString() };
 }
-
 function getRelated(issue, issues) {
   return issues.filter(i => (issue.related||[]).includes(i.id) || (i.related||[]).includes(issue.id)).filter(i => i.id !== issue.id);
+}
+
+const SORT_OPTIONS = [
+  {id:"created_desc",label:"新增日期（新→舊）"},
+  {id:"created_asc",label:"新增日期（舊→新）"},
+  {id:"subject",label:"科目"},
+  {id:"next_date",label:"下次複習日"},
+  {id:"difficulty",label:"難度（高→低）"},
+  {id:"name",label:"名稱"},
+];
+function sortIssues(list, sortBy) {
+  const arr = [...list];
+  switch(sortBy) {
+    case "created_desc": return arr.sort((a,b)=>(b.created||"").localeCompare(a.created||""));
+    case "created_asc": return arr.sort((a,b)=>(a.created||"").localeCompare(b.created||""));
+    case "subject": return arr.sort((a,b)=>SUBJECTS.indexOf(a.subject)-SUBJECTS.indexOf(b.subject));
+    case "next_date": return arr.sort((a,b)=>(a.nextDate||"9999").localeCompare(b.nextDate||"9999"));
+    case "difficulty": { const o={高:0,中:1,低:2}; return arr.sort((a,b)=>(o[a.difficulty]??1)-(o[b.difficulty]??1)); }
+    case "name": return arr.sort((a,b)=>a.name.localeCompare(b.name,"zh-Hant"));
+    default: return arr;
+  }
 }
 
 const s = {
@@ -50,6 +70,11 @@ button:hover{opacity:.85}button:disabled{opacity:.4;cursor:default}
 .cb.checked{background:${s.danger};border-color:${s.danger}}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner{width:16px;height:16px;border:2px solid ${s.border};border-top-color:${s.accent};border-radius:50%;animation:spin .8s linear infinite}
+.search-wrap{position:relative}
+.search-wrap input{padding-right:32px}
+.search-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:${s.muted};font-size:16px;padding:4px;cursor:pointer;line-height:1}
+.search-clear:hover{color:${s.text}}
+textarea.notes-lg{min-height:120px;font-size:14px;line-height:1.7;resize:vertical}
 `;
 
 export default function App() {
@@ -60,6 +85,7 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [syncStatus, setSyncStatus] = useState("loading");
   const [jumpSearch, setJumpSearch] = useState("");
+  const [viewIssueId, setViewIssueId] = useState(null);
   const sessionStart = useRef(Date.now());
 
   const load = useCallback(async () => {
@@ -159,8 +185,10 @@ export default function App() {
   }
 
   function jumpToIssue(name) { setJumpSearch(name); setTab("overview"); }
+  function openIssueDetail(id) { setViewIssueId(id); }
 
   const allTags=[...new Set((issues||[]).flatMap(i=>i.tags||[]))].sort();
+  const viewIssue = viewIssueId ? (issues||[]).find(i=>i.id===viewIssueId) : null;
 
   if (issues===null) return (
     <><style>{css}</style>
@@ -177,7 +205,7 @@ export default function App() {
   const syncLabel=syncStatus==="synced"?"● 已同步":syncStatus==="saving"?"● 儲存中":syncStatus==="loading"?"● 讀取中":"● 失敗";
   const todayDue=issues.filter(isDueToday);
   const todayMinutes=studyLog[todayStr()]||0;
-  const tabs=[{id:"dashboard",label:"首頁"},{id:"add",label:"新增"},{id:"overview",label:"總覽"},{id:"stats",label:"統計"}];
+  const tabList=[{id:"dashboard",label:"首頁"},{id:"add",label:"新增"},{id:"overview",label:"總覽"},{id:"stats",label:"統計"}];
 
   return (
     <><style>{css}</style>
@@ -189,12 +217,12 @@ export default function App() {
           <span style={{fontSize:10,color:syncColor}}>{syncLabel}</span>
         </div>
         <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-          {tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?s.accent:"transparent",color:tab===t.id?"#fff":s.muted,border:`1px solid ${tab===t.id?s.accent:s.border}`,padding:"6px 12px",borderRadius:6,fontSize:13}}>{t.label}</button>)}
+          {tabList.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?s.accent:"transparent",color:tab===t.id?"#fff":s.muted,border:`1px solid ${tab===t.id?s.accent:s.border}`,padding:"6px 12px",borderRadius:6,fontSize:13}}>{t.label}</button>)}
           <button onClick={toggleSprint} style={{background:sprintMode?s.danger:"transparent",color:sprintMode?"#fff":s.muted,border:`1px solid ${sprintMode?s.danger:s.border}`,padding:"6px 12px",borderRadius:6,fontSize:13}}>{sprintMode?"衝刺中":"衝刺"}</button>
         </div>
       </div>
       <div style={{padding:"16px",maxWidth:900,margin:"0 auto"}}>
-        {tab==="dashboard"&&<Dashboard issues={issues} todayDue={todayDue} studyLog={studyLog} todayMinutes={todayMinutes} markRemember={markRemember} markForgot={markForgot} getDueDate={getDueDate} jumpToIssue={jumpToIssue}/>}
+        {tab==="dashboard"&&<Dashboard issues={issues} todayDue={todayDue} studyLog={studyLog} todayMinutes={todayMinutes} markRemember={markRemember} markForgot={markForgot} getDueDate={getDueDate} jumpToIssue={jumpToIssue} openIssueDetail={openIssueDetail}/>}
         {tab==="add"&&<AddIssue issues={issues} onAdd={addIssue} setTab={setTab} allTags={allTags}/>}
         {tab==="overview"&&<Overview issues={issues} markRemember={markRemember} markForgot={markForgot} isDueToday={isDueToday} editIssue={editIssue} deleteIssues={deleteIssues} deleteOneIssue={deleteOneIssue} allTags={allTags} jumpSearch={jumpSearch} setJumpSearch={setJumpSearch} jumpToIssue={jumpToIssue}/>}
         {tab==="stats"&&<Stats issues={issues} studyLog={studyLog}/>}
@@ -221,6 +249,11 @@ export default function App() {
           </div>
         </Overlay>
       )}
+      {viewIssue&&(
+        <Overlay onClose={()=>setViewIssueId(null)}>
+          <IssueDetailModal issue={viewIssue} issues={issues} jumpToIssue={(name)=>{setViewIssueId(null);jumpToIssue(name);}} onClose={()=>setViewIssueId(null)}/>
+        </Overlay>
+      )}
     </div></>
   );
 }
@@ -228,7 +261,67 @@ export default function App() {
 function Overlay({children,onClose}) {
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
-      <div style={{background:s.card,border:`1px solid ${s.border}`,borderRadius:12,minWidth:280,maxWidth:440,width:"100%"}} onClick={e=>e.stopPropagation()}>{children}</div>
+      <div style={{background:s.card,border:`1px solid ${s.border}`,borderRadius:12,minWidth:280,maxWidth:500,width:"100%",maxHeight:"85vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>{children}</div>
+    </div>
+  );
+}
+
+function IssueDetailModal({issue,issues,jumpToIssue,onClose}) {
+  const intervals=getIntervals(issue.difficulty);
+  const related=getRelated(issue,issues);
+  return (
+    <div style={{padding:20}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
+        <div>
+          <div style={{fontWeight:700,fontSize:16,marginBottom:6}}>{issue.name}</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+            <span className="tag" style={{background:s.accentMuted,color:s.accent}}>{issue.subject}</span>
+            <span className="tag" style={{background:"transparent",color:DIFFICULTY_COLORS[issue.difficulty],border:`1px solid ${DIFFICULTY_COLORS[issue.difficulty]}`}}>{issue.difficulty}</span>
+            {issue.mastered&&<span className="tag" style={{background:s.successMuted,color:s.success}}>已掌握</span>}
+          </div>
+        </div>
+        <button onClick={onClose} style={{background:"transparent",color:s.muted,fontSize:18,padding:"2px 6px",border:"none"}}>✕</button>
+      </div>
+      {(issue.tags||[]).length>0&&<div style={{marginBottom:12,display:"flex",flexWrap:"wrap",gap:4}}>{issue.tags.map(t=><span key={t} className="tag" style={{background:s.tagBg,color:s.tagColor}}>{t}</span>)}</div>}
+      <div style={{marginBottom:12}}>
+        <div style={{display:"flex",gap:3,marginBottom:4}}>{intervals.map((_,idx)=><div key={idx} style={{flex:1,height:6,borderRadius:3,background:idx<issue.stage?s.accent:s.border}}/>)}</div>
+        <div style={{fontSize:12,color:s.muted}}>
+          階段 {Math.min(issue.stage,6)}/6
+          {!issue.mastered&&issue.nextDate&&` · 下次：${issue.nextDate}（${dayDiff(issue.nextDate)===0?"今天":dayDiff(issue.nextDate)>0?`${dayDiff(issue.nextDate)}天後`:`逾期${-dayDiff(issue.nextDate)}天`}）`}
+        </div>
+      </div>
+      {(issue.notes||"").trim()&&(
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>筆記</div>
+          <div style={{background:s.surface,borderRadius:6,padding:"10px 12px",fontSize:13,color:s.text,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{issue.notes}</div>
+        </div>
+      )}
+      {related.length>0&&(
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>關聯爭點</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+            {related.map(r=><span key={r.id} onClick={()=>jumpToIssue(r.name)} className="tag" style={{background:s.accentMuted,color:s.accent,cursor:"pointer",padding:"4px 10px",fontSize:12}}>{r.subject} · {r.name}</span>)}
+          </div>
+        </div>
+      )}
+      {(issue.errors||[]).length>0&&(
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>錯誤紀錄</div>
+          <div style={{background:s.surface,borderRadius:6,padding:"8px 10px"}}>
+            {issue.errors.map((e,idx)=><div key={idx} style={{fontSize:12,color:s.danger,marginBottom:2}}>{e.date} · {e.reason}</div>)}
+          </div>
+        </div>
+      )}
+      <div style={{fontSize:11,color:s.muted,marginTop:8}}>建立日期：{issue.created}</div>
+    </div>
+  );
+}
+
+function SearchInput({value,onChange,placeholder}) {
+  return (
+    <div className="search-wrap">
+      <input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder||"🔍 搜尋…"}/>
+      {value&&<button className="search-clear" onClick={()=>onChange("")}>✕</button>}
     </div>
   );
 }
@@ -260,7 +353,7 @@ function RelatedTags({related,jumpToIssue}) {
   );
 }
 
-function Dashboard({issues,todayDue,studyLog,todayMinutes,markRemember,markForgot,getDueDate,jumpToIssue}) {
+function Dashboard({issues,todayDue,studyLog,todayMinutes,markRemember,markForgot,getDueDate,jumpToIssue,openIssueDetail}) {
   const grouped=SUBJECTS.reduce((acc,sub)=>{const due=todayDue.filter(i=>i.subject===sub);if(due.length)acc[sub]=due;return acc;},{});
   const upcoming=issues.filter(i=>!i.mastered&&dayDiff(getDueDate(i))>0&&dayDiff(getDueDate(i))<=7).sort((a,b)=>getDueDate(a).localeCompare(getDueDate(b)));
   return (
@@ -285,7 +378,7 @@ function Dashboard({issues,todayDue,studyLog,todayMinutes,markRemember,markForgo
             <div key={sub} style={{marginBottom:14}}>
               <div style={{fontSize:12,fontWeight:600,color:s.accent,marginBottom:6}}>{sub}</div>
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {list.map(i=><IssueRow key={i.id} issue={i} onRemember={markRemember} onForgot={markForgot} issues={issues} jumpToIssue={jumpToIssue}/>)}
+                {list.map(i=><IssueRow key={i.id} issue={i} onRemember={markRemember} onForgot={markForgot} issues={issues} jumpToIssue={jumpToIssue} openDetail={openIssueDetail}/>)}
               </div>
             </div>
           ))}
@@ -294,7 +387,7 @@ function Dashboard({issues,todayDue,studyLog,todayMinutes,markRemember,markForgo
       {upcoming.length>0&&(
         <Sec title="未來 7 天即將到期">
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
-            {upcoming.map(i=>{const d=dayDiff(getDueDate(i));return <div key={i.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:s.surface,border:`1px solid ${s.border}`,borderRadius:6}}><span style={{fontSize:13}}>{i.name}</span><div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><span className="tag" style={{background:s.accentMuted,color:s.accent}}>{i.subject}</span><span style={{fontSize:11,color:s.muted}}>{d}天後</span></div></div>;})}
+            {upcoming.map(i=>{const d=dayDiff(getDueDate(i));return <div key={i.id} onClick={()=>openIssueDetail(i.id)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,cursor:"pointer"}}><span style={{fontSize:13}}>{i.name}</span><div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><span className="tag" style={{background:s.accentMuted,color:s.accent}}>{i.subject}</span><span style={{fontSize:11,color:s.muted}}>{d}天後</span></div></div>;})}
           </div>
         </Sec>
       )}
@@ -302,32 +395,22 @@ function Dashboard({issues,todayDue,studyLog,todayMinutes,markRemember,markForgo
   );
 }
 
-function IssueRow({issue,onRemember,onForgot,issues,jumpToIssue}) {
-  const [expanded,setExpanded]=useState(false);
-  const related=getRelated(issue,issues||[]);
-  const hasExtra=(issue.notes||"").trim()||(issue.tags||[]).length>0||related.length>0||(issue.errors||[]).length>0;
+function IssueRow({issue,onRemember,onForgot,issues,jumpToIssue,openDetail}) {
   return (
     <div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,overflow:"hidden"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",gap:8,flexWrap:"wrap"}}>
-        <div style={{flex:1,minWidth:0,cursor:hasExtra?"pointer":"default"}} onClick={()=>hasExtra&&setExpanded(!expanded)}>
+        <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>openDetail(issue.id)}>
           <span style={{fontSize:13,fontWeight:500}}>{issue.name}</span>
           <span className="tag" style={{marginLeft:6,background:s.accentMuted,color:s.accent}}>{issue.subject}</span>
           <span className="tag" style={{marginLeft:4,background:"transparent",color:DIFFICULTY_COLORS[issue.difficulty],border:`1px solid ${DIFFICULTY_COLORS[issue.difficulty]}`,fontSize:10}}>{issue.difficulty}</span>
-          {hasExtra&&<span style={{marginLeft:6,fontSize:10,color:s.muted}}>{expanded?"▼":"▶"}</span>}
+          {(issue.tags||[]).length>0&&<span style={{marginLeft:4,fontSize:10,color:s.tagColor}}>🏷{issue.tags.length}</span>}
+          {(issue.notes||"").trim()&&<span style={{marginLeft:4,fontSize:10,color:s.muted}}>📝</span>}
         </div>
         <div style={{display:"flex",gap:6,flexShrink:0}}>
-          <button onClick={()=>onRemember(issue)} style={{background:s.successMuted,color:s.success,fontSize:12,padding:"6px 10px"}}>記住了</button>
-          <button onClick={()=>onForgot(issue)} style={{background:s.dangerMuted,color:s.danger,fontSize:12,padding:"6px 10px"}}>還沒熟</button>
+          <button onClick={e=>{e.stopPropagation();onRemember(issue);}} style={{background:s.successMuted,color:s.success,fontSize:12,padding:"6px 10px"}}>記住了</button>
+          <button onClick={e=>{e.stopPropagation();onForgot(issue);}} style={{background:s.dangerMuted,color:s.danger,fontSize:12,padding:"6px 10px"}}>還沒熟</button>
         </div>
       </div>
-      {expanded&&(
-        <div style={{padding:"0 12px 10px",borderTop:`1px solid ${s.border}`}}>
-          {(issue.tags||[]).length>0&&<div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4}}>{issue.tags.map(t=><span key={t} className="tag" style={{background:s.tagBg,color:s.tagColor}}>{t}</span>)}</div>}
-          {(issue.notes||"").trim()&&<div style={{marginTop:8,background:s.card,borderRadius:5,padding:"8px 10px",fontSize:12,color:s.text,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{issue.notes}</div>}
-          {related.length>0&&<div style={{marginTop:8}}><RelatedTags related={related} jumpToIssue={jumpToIssue}/></div>}
-          {(issue.errors||[]).length>0&&<div style={{marginTop:8,background:s.card,borderRadius:5,padding:"7px 10px"}}><div style={{fontSize:10,color:s.muted,marginBottom:3}}>錯誤紀錄</div>{issue.errors.map((e,idx)=><div key={idx} style={{fontSize:11,color:s.danger}}>{e.date} · {e.reason}</div>)}</div>}
-        </div>
-      )}
     </div>
   );
 }
@@ -347,19 +430,19 @@ function AddIssue({issues,onAdd,setTab,allTags}) {
     setName("");setRelated([]);setSearch("");setNotes("");setTags([]);setTab("overview");
   }
   return (
-    <div style={{maxWidth:520}}>
+    <div style={{maxWidth:600}}>
       <Sec title="新增爭點">
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
           <div><Lbl>爭點名稱</Lbl><input value={name} onChange={e=>setName(e.target.value)} placeholder="例：法人格否認理論的要件" onKeyDown={e=>e.key==="Enter"&&submit()}/></div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            <div><Lbl>科目</Lbl><select value={subject} onChange={e=>setSubject(e.target.value)}>{SUBJECTS.map(ss=><option key={ss}>{ss}</option>)}</select></div>
+            <div><Lbl>科目</Lbl><select value={subject} onChange={e=>setSubject(e.target.value)}>{SUBJECTS.map(x=><option key={x}>{x}</option>)}</select></div>
             <div><Lbl>難度</Lbl><select value={difficulty} onChange={e=>setDifficulty(e.target.value)}>{["高","中","低"].map(d=><option key={d}>{d}</option>)}</select></div>
           </div>
-          <div><Lbl>筆記（要件、口訣、重點）</Lbl><textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={3} placeholder="記下關鍵要件或容易忘的點…" style={{resize:"vertical",fontSize:13}}/></div>
+          <div><Lbl>筆記（要件、口訣、重點）</Lbl><textarea className="notes-lg" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="記下關鍵要件或容易忘的點…&#10;&#10;例：&#10;1. 第一要件：…&#10;2. 第二要件：…&#10;3. 實務見解：…"/></div>
           <div><Lbl>標籤</Lbl><TagInput tags={tags} setTags={setTags} allTags={allTags}/></div>
           <div>
             <Lbl>關聯爭點</Lbl>
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜尋現有爭點…"/>
+            <SearchInput value={search} onChange={setSearch} placeholder="搜尋現有爭點…"/>
             {results.length>0&&<div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,marginTop:4,maxHeight:160,overflowY:"auto"}}>{results.slice(0,8).map(i=><div key={i.id} onClick={()=>{setRelated(r=>[...r,i.id]);setSearch("");}} style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${s.border}`,fontSize:13}}><span style={{color:s.accent}}>{i.subject}</span> · {i.name}</div>)}</div>}
             <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:6}}>
               {related.map(id=>{const i=issues.find(x=>x.id===id);if(!i)return null;return <span key={id} className="tag" style={{background:s.accentMuted,color:s.accent,padding:"3px 8px"}}>{i.name}<span onClick={()=>setRelated(r=>r.filter(x=>x!==id))} style={{marginLeft:4,cursor:"pointer",opacity:.7}}>✕</span></span>;})}
@@ -381,6 +464,7 @@ function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIss
   const [statusFilter,setStatusFilter]=useState("全部");
   const [tagFilter,setTagFilter]=useState("全部");
   const [searchQuery,setSearchQuery]=useState(jumpSearch||"");
+  const [sortBy,setSortBy]=useState("created_desc");
   const [editingId,setEditingId]=useState(null);
   const [selected,setSelected]=useState(new Set());
   const [deleteMode,setDeleteMode]=useState(false);
@@ -397,6 +481,7 @@ function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIss
     const q=searchQuery.trim().toLowerCase();
     filtered=filtered.filter(i=>i.name.toLowerCase().includes(q)||i.subject.includes(q)||(i.notes||"").toLowerCase().includes(q)||(i.tags||[]).some(t=>t.includes(q)));
   }
+  filtered = sortIssues(filtered, sortBy);
 
   function toggleSelect(id){setSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n;});}
   function selectAll(){if(selected.size===filtered.length)setSelected(new Set());else setSelected(new Set(filtered.map(i=>i.id)));}
@@ -405,11 +490,14 @@ function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIss
   return (
     <div>
       <div style={{marginBottom:12}}>
-        <input value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} placeholder="🔍 搜尋爭點名稱、筆記、標籤…" style={{marginBottom:10}}/>
-        <div style={{display:"flex",gap:7,flexWrap:"wrap",alignItems:"center"}}>
-          <select value={subFilter} onChange={e=>setSubFilter(e.target.value)} style={{width:"auto"}}><option>全部</option>{SUBJECTS.map(ss=><option key={ss}>{ss}</option>)}</select>
-          <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)} style={{width:"auto"}}>{["全部","今日待複習","進行中","已掌握"].map(ss=><option key={ss}>{ss}</option>)}</select>
+        <SearchInput value={searchQuery} onChange={setSearchQuery} placeholder="🔍 搜尋爭點名稱、筆記、標籤…"/>
+        <div style={{display:"flex",gap:7,flexWrap:"wrap",alignItems:"center",marginTop:10}}>
+          <select value={subFilter} onChange={e=>setSubFilter(e.target.value)} style={{width:"auto"}}><option>全部</option>{SUBJECTS.map(x=><option key={x}>{x}</option>)}</select>
+          <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)} style={{width:"auto"}}>{["全部","今日待複習","進行中","已掌握"].map(x=><option key={x}>{x}</option>)}</select>
           {allTags.length>0&&<select value={tagFilter} onChange={e=>setTagFilter(e.target.value)} style={{width:"auto"}}><option>全部</option>{allTags.map(t=><option key={t}>{t}</option>)}</select>}
+          <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{width:"auto"}}>
+            {SORT_OPTIONS.map(o=><option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
           <span style={{fontSize:12,color:s.muted}}>共 {filtered.length} 筆</span>
           <div style={{marginLeft:"auto"}}>
             {!deleteMode
@@ -438,6 +526,7 @@ function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIss
 }
 
 function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,editIssue,deleteMode,selected,onToggleSelect,onDelete,allTags,jumpToIssue}) {
+  const [editSubject,setEditSubject]=useState(issue.subject);
   const [editDiff,setEditDiff]=useState(issue.difficulty);
   const [editNotes,setEditNotes]=useState(issue.notes||"");
   const [editTags,setEditTags]=useState(issue.tags||[]);
@@ -449,8 +538,8 @@ function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,ed
   const related=getRelated(issue,issues);
   const relSearch=editRelSearch.length>=1?issues.filter(i=>(i.name.includes(editRelSearch)||i.subject.includes(editRelSearch))&&i.id!==issue.id&&!editRel.includes(i.id)):[];
 
-  function saveEdit(){editIssue(issue.id,{difficulty:editDiff,related:editRel,notes:editNotes,tags:editTags});setEditing(null);}
-  function startEdit(){setEditDiff(issue.difficulty);setEditNotes(issue.notes||"");setEditTags(issue.tags||[]);setEditRel(issue.related||[]);setEditing(issue.id);}
+  function saveEdit(){editIssue(issue.id,{subject:editSubject,difficulty:editDiff,related:editRel,notes:editNotes,tags:editTags});setEditing(null);}
+  function startEdit(){setEditSubject(issue.subject);setEditDiff(issue.difficulty);setEditNotes(issue.notes||"");setEditTags(issue.tags||[]);setEditRel(issue.related||[]);setEditing(issue.id);}
 
   return (
     <div style={{background:selected?s.dangerMuted:s.card,border:`1px solid ${selected?s.danger:isDue?s.danger:s.border}`,borderRadius:8,padding:"13px 15px",transition:"background .15s"}}>
@@ -495,13 +584,16 @@ function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,ed
           )}
           {editing&&(
             <div style={{borderTop:`1px solid ${s.border}`,paddingTop:12,marginBottom:8}}>
-              <div style={{display:"flex",gap:8,marginBottom:10,alignItems:"center"}}><Lbl>難度</Lbl><select value={editDiff} onChange={e=>setEditDiff(e.target.value)} style={{width:"auto"}}>{["高","中","低"].map(d=><option key={d}>{d}</option>)}</select></div>
-              <div style={{marginBottom:10}}><Lbl>筆記</Lbl><textarea value={editNotes} onChange={e=>setEditNotes(e.target.value)} rows={3} style={{resize:"vertical",fontSize:13}}/></div>
+              <div style={{display:"flex",gap:8,marginBottom:10,alignItems:"center",flexWrap:"wrap"}}>
+                <div><Lbl>科目</Lbl><select value={editSubject} onChange={e=>setEditSubject(e.target.value)} style={{width:"auto"}}>{SUBJECTS.map(x=><option key={x}>{x}</option>)}</select></div>
+                <div><Lbl>難度</Lbl><select value={editDiff} onChange={e=>setEditDiff(e.target.value)} style={{width:"auto"}}>{["高","中","低"].map(d=><option key={d}>{d}</option>)}</select></div>
+              </div>
+              <div style={{marginBottom:10}}><Lbl>筆記</Lbl><textarea className="notes-lg" value={editNotes} onChange={e=>setEditNotes(e.target.value)}/></div>
               <div style={{marginBottom:10}}><Lbl>標籤</Lbl><TagInput tags={editTags} setTags={setEditTags} allTags={allTags}/></div>
               <Lbl>關聯爭點</Lbl>
-              <input value={editRelSearch} onChange={e=>setEditRelSearch(e.target.value)} placeholder="搜尋…" style={{marginBottom:6}}/>
-              {relSearch.length>0&&<div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:5,marginBottom:6,maxHeight:120,overflowY:"auto"}}>{relSearch.slice(0,5).map(i=><div key={i.id} onClick={()=>{setEditRel(r=>[...r,i.id]);setEditRelSearch("");}} style={{padding:"7px 10px",cursor:"pointer",fontSize:12}}>{i.subject} · {i.name}</div>)}</div>}
-              <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>{editRel.map(id=>{const i=issues.find(x=>x.id===id);if(!i)return null;return <span key={id} className="tag" style={{background:s.accentMuted,color:s.accent,fontSize:11}}>{i.name}<span onClick={()=>setEditRel(r=>r.filter(x=>x!==id))} style={{marginLeft:3,cursor:"pointer",opacity:.7}}>✕</span></span>;})}</div>
+              <SearchInput value={editRelSearch} onChange={setEditRelSearch} placeholder="搜尋爭點…"/>
+              {relSearch.length>0&&<div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:5,marginTop:4,marginBottom:6,maxHeight:120,overflowY:"auto"}}>{relSearch.slice(0,5).map(i=><div key={i.id} onClick={()=>{setEditRel(r=>[...r,i.id]);setEditRelSearch("");}} style={{padding:"7px 10px",cursor:"pointer",fontSize:12}}>{i.subject} · {i.name}</div>)}</div>}
+              <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6,marginBottom:8}}>{editRel.map(id=>{const i=issues.find(x=>x.id===id);if(!i)return null;return <span key={id} className="tag" style={{background:s.accentMuted,color:s.accent,fontSize:11}}>{i.name}<span onClick={()=>setEditRel(r=>r.filter(x=>x!==id))} style={{marginLeft:3,cursor:"pointer",opacity:.7}}>✕</span></span>;})}</div>
               <button onClick={saveEdit} style={{background:s.accent,color:"#fff",fontSize:13,padding:"8px 16px"}}>儲存變更</button>
             </div>
           )}
