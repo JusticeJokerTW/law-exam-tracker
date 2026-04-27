@@ -2,10 +2,16 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "./supabase.js";
 
 const SUBJECTS = ["憲法","行政法","民法","民訴","刑法","刑訴","公司法","證交法","保險法","財稅法"];
+const SUBJECT_COLORS = {
+  "憲法":"#f59e0b","行政法":"#3b82f6","民法":"#10b981","民訴":"#06b6d4",
+  "刑法":"#ef4444","刑訴":"#f97316","公司法":"#8b5cf6","證交法":"#ec4899",
+  "保險法":"#14b8a6","財稅法":"#6366f1"
+};
 const INTERVALS = [3,7,14,21,30,90];
 const HARD_INTERVALS = [1,3,7,10,15,45];
 const FAIL_REASONS = ["完全忘記","要件不完整","與其他爭點混淆","其他"];
 const DIFFICULTY_COLORS = { 高:"#c0392b", 中:"#e67e22", 低:"#27ae60" };
+const DEFAULT_DAILY_LIMIT = 30;
 
 function getIntervals(d) { return d === "高" ? HARD_INTERVALS : INTERVALS; }
 function calcNextDate(base, stage, diff) {
@@ -27,6 +33,20 @@ function getRelated(issue, issues) {
   return issues.filter(i => (issue.related||[]).includes(i.id) || (i.related||[]).includes(issue.id)).filter(i => i.id !== issue.id);
 }
 
+// 到期爭點優先排序：逾期天數多 > 難度高 > 錯誤次數多
+function prioritySort(list) {
+  const diffOrder = {高:0,中:1,低:2};
+  return [...list].sort((a,b) => {
+    const aDays = -dayDiff(a.nextDate||todayStr());
+    const bDays = -dayDiff(b.nextDate||todayStr());
+    if (aDays !== bDays) return bDays - aDays; // 逾期越久越前
+    const aDiff = diffOrder[a.difficulty]??1;
+    const bDiff = diffOrder[b.difficulty]??1;
+    if (aDiff !== bDiff) return aDiff - bDiff; // 難度高優先
+    return (b.errors||[]).length - (a.errors||[]).length; // 錯誤多優先
+  });
+}
+
 const SORT_OPTIONS = [
   {id:"created_desc",label:"新增日期（新→舊）"},
   {id:"created_asc",label:"新增日期（舊→新）"},
@@ -36,13 +56,13 @@ const SORT_OPTIONS = [
   {id:"name",label:"名稱"},
 ];
 function sortIssues(list, sortBy) {
-  const arr = [...list];
+  const arr=[...list];
   switch(sortBy) {
     case "created_desc": return arr.sort((a,b)=>(b.created||"").localeCompare(a.created||""));
     case "created_asc": return arr.sort((a,b)=>(a.created||"").localeCompare(b.created||""));
     case "subject": return arr.sort((a,b)=>SUBJECTS.indexOf(a.subject)-SUBJECTS.indexOf(b.subject));
     case "next_date": return arr.sort((a,b)=>(a.nextDate||"9999").localeCompare(b.nextDate||"9999"));
-    case "difficulty": { const o={高:0,中:1,低:2}; return arr.sort((a,b)=>(o[a.difficulty]??1)-(o[b.difficulty]??1)); }
+    case "difficulty": {const o={高:0,中:1,低:2};return arr.sort((a,b)=>(o[a.difficulty]??1)-(o[b.difficulty]??1));}
     case "name": return arr.sort((a,b)=>a.name.localeCompare(b.name,"zh-Hant"));
     default: return arr;
   }
@@ -77,11 +97,17 @@ button:hover{opacity:.85}button:disabled{opacity:.4;cursor:default}
 textarea.notes-lg{min-height:120px;font-size:14px;line-height:1.7;resize:vertical}
 `;
 
+function SubjectTag({subject}) {
+  const color = SUBJECT_COLORS[subject] || s.accent;
+  return <span className="tag" style={{background:color+"20",color:color,border:`1px solid ${color}40`}}>{subject}</span>;
+}
+
 export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [issues, setIssues] = useState(null);
   const [studyLog, setStudyLog] = useState({});
   const [sprintMode, setSprintMode] = useState(false);
+  const [dailyLimit, setDailyLimit] = useState(DEFAULT_DAILY_LIMIT);
   const [modal, setModal] = useState(null);
   const [syncStatus, setSyncStatus] = useState("loading");
   const [jumpSearch, setJumpSearch] = useState("");
@@ -91,106 +117,110 @@ export default function App() {
   const load = useCallback(async () => {
     try {
       setSyncStatus("loading");
-      const [iRes, lRes, sRes] = await Promise.all([
+      const [iRes, lRes, sRes, dlRes] = await Promise.all([
         supabase.from("issues").select("*"),
         supabase.from("study_log").select("*"),
         supabase.from("settings").select("*").eq("key","sprint_mode").maybeSingle(),
+        supabase.from("settings").select("*").eq("key","daily_limit").maybeSingle(),
       ]);
       if (iRes.error) throw iRes.error;
       setIssues((iRes.data||[]).map(dbToIssue));
-      const log = {};
-      (lRes.data||[]).forEach(r => { log[r.date] = r.minutes; });
+      const log={};
+      (lRes.data||[]).forEach(r=>{log[r.date]=r.minutes;});
       setStudyLog(log);
-      setSprintMode(sRes.data?.value === true);
+      setSprintMode(sRes.data?.value===true);
+      if (dlRes.data?.value) setDailyLimit(dlRes.data.value);
       setSyncStatus("synced");
-    } catch (e) { console.error(e); setSyncStatus("error"); }
-  }, []);
+    } catch(e){console.error(e);setSyncStatus("error");}
+  },[]);
 
-  useEffect(() => {
+  useEffect(()=>{
     load();
-    const ch = supabase.channel("sync")
+    const ch=supabase.channel("sync")
       .on("postgres_changes",{event:"*",schema:"public",table:"issues"},load)
       .on("postgres_changes",{event:"*",schema:"public",table:"study_log"},load)
       .on("postgres_changes",{event:"*",schema:"public",table:"settings"},load)
       .subscribe();
-    sessionStart.current = Date.now();
-    return () => {
+    sessionStart.current=Date.now();
+    return ()=>{
       ch.unsubscribe();
-      const elapsed = Math.floor((Date.now()-sessionStart.current)/60000);
-      if (elapsed > 0) {
-        const today = todayStr();
-        supabase.from("study_log").upsert({date:today,minutes:(studyLog[today]||0)+elapsed});
-      }
+      const elapsed=Math.floor((Date.now()-sessionStart.current)/60000);
+      if(elapsed>0){const today=todayStr();supabase.from("study_log").upsert({date:today,minutes:(studyLog[today]||0)+elapsed});}
     };
-  }, [load]);
+  },[load]);
 
   function getDueDate(issue) {
-    if (sprintMode && issue.stage < 6) {
-      const d = new Date(issue.lastReviewed || issue.created);
-      d.setDate(d.getDate()+2);
-      return d.toISOString().split("T")[0];
-    }
+    if(sprintMode&&issue.stage<6){const d=new Date(issue.lastReviewed||issue.created);d.setDate(d.getDate()+2);return d.toISOString().split("T")[0];}
     return issue.nextDate;
   }
-  function isDueToday(issue) { return !issue.mastered && issue.stage < 6 && getDueDate(issue) <= todayStr(); }
+  function isDueToday(issue){return !issue.mastered&&issue.stage<6&&getDueDate(issue)<=todayStr();}
 
-  async function saveIssue(i) {
-    setSyncStatus("saving");
-    const { error } = await supabase.from("issues").upsert(issueToDb(i));
-    setSyncStatus(error?"error":"synced");
-  }
+  async function saveIssue(i){setSyncStatus("saving");const{error}=await supabase.from("issues").upsert(issueToDb(i));setSyncStatus(error?"error":"synced");}
+
   async function markRemember(issue) {
-    const ns=issue.stage+1, mastered=ns>=6;
+    const ns=issue.stage+1,mastered=ns>=6;
     const next={...issue,stage:ns,lastReviewed:todayStr(),nextDate:mastered?null:calcNextDate(todayStr(),ns,issue.difficulty),mastered};
     setIssues(arr=>arr.map(i=>i.id===issue.id?next:i));
     await saveIssue(next);
+    // 更新 viewIssue
+    if(viewIssueId===issue.id) setViewIssueId(null);
     const rel=getRelated(issue,issues||[]);
     if(rel.length) setModal({type:"related_remind",related:rel});
   }
-  function markForgot(issue) { setModal({type:"forgot",issue}); }
+  function markForgot(issue){setModal({type:"forgot",issue});}
   async function confirmForgot(issue,reason) {
-    const next={...issue,stage:0,lastReviewed:todayStr(),nextDate:calcNextDate(todayStr(),0,issue.difficulty),mastered:false,errors:[...(issue.errors||[]),{date:todayStr(),reason}]};
+    // 退一個階段而非重置到0
+    const newStage = Math.max(0, issue.stage - 1);
+    const next={...issue,stage:newStage,lastReviewed:todayStr(),nextDate:calcNextDate(todayStr(),newStage,issue.difficulty),mastered:false,errors:[...(issue.errors||[]),{date:todayStr(),reason}]};
     setIssues(arr=>arr.map(i=>i.id===issue.id?next:i));
     await saveIssue(next);
+    if(viewIssueId===issue.id) setViewIssueId(null);
     const rel=getRelated(issue,issues||[]);
     setModal(rel.length?{type:"related_remind",related:rel}:null);
   }
-  async function addIssue(issue) {
+  async function addIssue(issue){
     const n={...issue,id:uid(),created:todayStr(),stage:0,nextDate:calcNextDate(todayStr(),0,issue.difficulty),lastReviewed:null,mastered:false,errors:[],related:issue.related||[]};
     setIssues(arr=>[...arr,n]);
     await saveIssue(n);
   }
-  async function editIssue(id,changes) {
-    const u=issues.find(i=>i.id===id); if(!u) return;
+  async function editIssue(id,changes){
+    const u=issues.find(i=>i.id===id);if(!u)return;
     const next={...u,...changes};
     setIssues(arr=>arr.map(i=>i.id===id?next:i));
     await saveIssue(next);
   }
-  async function deleteIssues(ids) {
+  async function deleteIssues(ids){
     setIssues(arr=>arr.filter(i=>!ids.includes(i.id)));
     setSyncStatus("saving");
     const{error}=await supabase.from("issues").delete().in("id",ids);
     setSyncStatus(error?"error":"synced");
   }
-  async function deleteOneIssue(id) {
+  async function deleteOneIssue(id){
     setIssues(arr=>arr.filter(i=>i.id!==id));
+    if(viewIssueId===id) setViewIssueId(null);
     setSyncStatus("saving");
     const{error}=await supabase.from("issues").delete().eq("id",id);
     setSyncStatus(error?"error":"synced");
   }
-  async function toggleSprint() {
-    const next=!sprintMode; setSprintMode(next); setSyncStatus("saving");
+  async function toggleSprint(){
+    const next=!sprintMode;setSprintMode(next);setSyncStatus("saving");
     const{error}=await supabase.from("settings").upsert({key:"sprint_mode",value:next});
     setSyncStatus(error?"error":"synced");
   }
+  async function updateDailyLimit(val){
+    const v=Math.max(1,Math.min(200,val));
+    setDailyLimit(v);setSyncStatus("saving");
+    const{error}=await supabase.from("settings").upsert({key:"daily_limit",value:v});
+    setSyncStatus(error?"error":"synced");
+  }
 
-  function jumpToIssue(name) { setJumpSearch(name); setTab("overview"); }
-  function openIssueDetail(id) { setViewIssueId(id); }
+  function jumpToIssue(name){setJumpSearch(name);setTab("overview");setViewIssueId(null);}
+  function openIssueDetail(id){setViewIssueId(id);}
 
   const allTags=[...new Set((issues||[]).flatMap(i=>i.tags||[]))].sort();
-  const viewIssue = viewIssueId ? (issues||[]).find(i=>i.id===viewIssueId) : null;
+  const viewIssue=viewIssueId?(issues||[]).find(i=>i.id===viewIssueId):null;
 
-  if (issues===null) return (
+  if(issues===null) return (
     <><style>{css}</style>
     <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,color:s.muted,fontSize:14,padding:20}}>
       <div style={{fontSize:32}}>⚖️</div>
@@ -203,7 +233,11 @@ export default function App() {
 
   const syncColor=syncStatus==="synced"?s.success:syncStatus==="saving"||syncStatus==="loading"?"#f0a840":s.danger;
   const syncLabel=syncStatus==="synced"?"● 已同步":syncStatus==="saving"?"● 儲存中":syncStatus==="loading"?"● 讀取中":"● 失敗";
-  const todayDue=issues.filter(isDueToday);
+
+  // 今日到期：優先排序後取上限
+  const allDue=prioritySort(issues.filter(isDueToday));
+  const todayDue=allDue.slice(0,dailyLimit);
+  const overflowCount=Math.max(0,allDue.length-dailyLimit);
   const todayMinutes=studyLog[todayStr()]||0;
   const tabList=[{id:"dashboard",label:"首頁"},{id:"add",label:"新增"},{id:"overview",label:"總覽"},{id:"stats",label:"統計"}];
 
@@ -222,7 +256,7 @@ export default function App() {
         </div>
       </div>
       <div style={{padding:"16px",maxWidth:900,margin:"0 auto"}}>
-        {tab==="dashboard"&&<Dashboard issues={issues} todayDue={todayDue} studyLog={studyLog} todayMinutes={todayMinutes} markRemember={markRemember} markForgot={markForgot} getDueDate={getDueDate} jumpToIssue={jumpToIssue} openIssueDetail={openIssueDetail}/>}
+        {tab==="dashboard"&&<Dashboard issues={issues} todayDue={todayDue} allDueCount={allDue.length} overflowCount={overflowCount} dailyLimit={dailyLimit} updateDailyLimit={updateDailyLimit} studyLog={studyLog} todayMinutes={todayMinutes} markRemember={markRemember} markForgot={markForgot} getDueDate={getDueDate} jumpToIssue={jumpToIssue} openIssueDetail={openIssueDetail}/>}
         {tab==="add"&&<AddIssue issues={issues} onAdd={addIssue} setTab={setTab} allTags={allTags}/>}
         {tab==="overview"&&<Overview issues={issues} markRemember={markRemember} markForgot={markForgot} isDueToday={isDueToday} editIssue={editIssue} deleteIssues={deleteIssues} deleteOneIssue={deleteOneIssue} allTags={allTags} jumpSearch={jumpSearch} setJumpSearch={setJumpSearch} jumpToIssue={jumpToIssue}/>}
         {tab==="stats"&&<Stats issues={issues} studyLog={studyLog}/>}
@@ -231,7 +265,8 @@ export default function App() {
         <Overlay onClose={()=>setModal(null)}>
           <div style={{padding:20}}>
             <div style={{fontWeight:600,marginBottom:12,fontSize:15}}>標記失敗原因</div>
-            <div style={{color:s.muted,marginBottom:14,fontSize:13}}>「{modal.issue.name}」</div>
+            <div style={{color:s.muted,marginBottom:6,fontSize:13}}>「{modal.issue.name}」</div>
+            <div style={{color:s.muted,marginBottom:14,fontSize:11}}>將從階段 {modal.issue.stage} 退回階段 {Math.max(0,modal.issue.stage-1)}</div>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               {FAIL_REASONS.map(r=><button key={r} onClick={()=>confirmForgot(modal.issue,r)} style={{background:s.surface,color:s.text,border:`1px solid ${s.border}`,textAlign:"left",padding:"11px 14px",fontSize:14}}>{r}</button>)}
             </div>
@@ -244,14 +279,14 @@ export default function App() {
           <div style={{padding:20}}>
             <div style={{fontWeight:600,marginBottom:10,fontSize:15}}>相關爭點提醒</div>
             <div style={{color:s.muted,marginBottom:12,fontSize:13}}>你也記得以下關聯爭點嗎？</div>
-            {modal.related.map(r=><div key={r.id} style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,padding:"9px 12px",marginBottom:8,fontSize:13}}><span style={{color:s.accent}}>{r.subject}</span> · {r.name}</div>)}
+            {modal.related.map(r=><div key={r.id} style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,padding:"9px 12px",marginBottom:8,fontSize:13}}><SubjectTag subject={r.subject}/> <span style={{marginLeft:4}}>{r.name}</span></div>)}
             <button onClick={()=>setModal(null)} style={{marginTop:12,background:s.accent,color:"#fff",width:"100%",padding:"10px"}}>了解</button>
           </div>
         </Overlay>
       )}
       {viewIssue&&(
         <Overlay onClose={()=>setViewIssueId(null)}>
-          <IssueDetailModal issue={viewIssue} issues={issues} jumpToIssue={(name)=>{setViewIssueId(null);jumpToIssue(name);}} onClose={()=>setViewIssueId(null)}/>
+          <IssueDetailModal issue={viewIssue} issues={issues} allTags={allTags} editIssue={editIssue} deleteOneIssue={deleteOneIssue} markRemember={markRemember} markForgot={markForgot} isDueToday={isDueToday} jumpToIssue={(name)=>{setViewIssueId(null);jumpToIssue(name);}} onClose={()=>setViewIssueId(null)}/>
         </Overlay>
       )}
     </div></>
@@ -261,58 +296,108 @@ export default function App() {
 function Overlay({children,onClose}) {
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
-      <div style={{background:s.card,border:`1px solid ${s.border}`,borderRadius:12,minWidth:280,maxWidth:500,width:"100%",maxHeight:"85vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>{children}</div>
+      <div style={{background:s.card,border:`1px solid ${s.border}`,borderRadius:12,minWidth:280,maxWidth:540,width:"100%",maxHeight:"90vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>{children}</div>
     </div>
   );
 }
 
-function IssueDetailModal({issue,issues,jumpToIssue,onClose}) {
+function IssueDetailModal({issue,issues,allTags,editIssue,deleteOneIssue,markRemember,markForgot,isDueToday,jumpToIssue,onClose}) {
+  const [editing,setEditing]=useState(false);
+  const [editSubject,setEditSubject]=useState(issue.subject);
+  const [editDiff,setEditDiff]=useState(issue.difficulty);
+  const [editNotes,setEditNotes]=useState(issue.notes||"");
+  const [editTags,setEditTags]=useState(issue.tags||[]);
+  const [editRelSearch,setEditRelSearch]=useState("");
+  const [editRel,setEditRel]=useState(issue.related||[]);
+  const [confirmDel,setConfirmDel]=useState(false);
   const intervals=getIntervals(issue.difficulty);
   const related=getRelated(issue,issues);
+  const isDue=isDueToday(issue);
+  const relSearch=editRelSearch.length>=1?issues.filter(i=>(i.name.includes(editRelSearch)||i.subject.includes(editRelSearch))&&i.id!==issue.id&&!editRel.includes(i.id)):[];
+
+  function startEdit(){setEditSubject(issue.subject);setEditDiff(issue.difficulty);setEditNotes(issue.notes||"");setEditTags(issue.tags||[]);setEditRel(issue.related||[]);setEditing(true);}
+  function saveEdit(){editIssue(issue.id,{subject:editSubject,difficulty:editDiff,related:editRel,notes:editNotes,tags:editTags});setEditing(false);}
+
   return (
     <div style={{padding:20}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
         <div>
           <div style={{fontWeight:700,fontSize:16,marginBottom:6}}>{issue.name}</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-            <span className="tag" style={{background:s.accentMuted,color:s.accent}}>{issue.subject}</span>
+            <SubjectTag subject={issue.subject}/>
             <span className="tag" style={{background:"transparent",color:DIFFICULTY_COLORS[issue.difficulty],border:`1px solid ${DIFFICULTY_COLORS[issue.difficulty]}`}}>{issue.difficulty}</span>
             {issue.mastered&&<span className="tag" style={{background:s.successMuted,color:s.success}}>已掌握</span>}
+            {isDue&&!issue.mastered&&<span className="tag" style={{background:s.dangerMuted,color:s.danger}}>今日到期</span>}
           </div>
         </div>
-        <button onClick={onClose} style={{background:"transparent",color:s.muted,fontSize:18,padding:"2px 6px",border:"none"}}>✕</button>
-      </div>
-      {(issue.tags||[]).length>0&&<div style={{marginBottom:12,display:"flex",flexWrap:"wrap",gap:4}}>{issue.tags.map(t=><span key={t} className="tag" style={{background:s.tagBg,color:s.tagColor}}>{t}</span>)}</div>}
-      <div style={{marginBottom:12}}>
-        <div style={{display:"flex",gap:3,marginBottom:4}}>{intervals.map((_,idx)=><div key={idx} style={{flex:1,height:6,borderRadius:3,background:idx<issue.stage?s.accent:s.border}}/>)}</div>
-        <div style={{fontSize:12,color:s.muted}}>
-          階段 {Math.min(issue.stage,6)}/6
-          {!issue.mastered&&issue.nextDate&&` · 下次：${issue.nextDate}（${dayDiff(issue.nextDate)===0?"今天":dayDiff(issue.nextDate)>0?`${dayDiff(issue.nextDate)}天後`:`逾期${-dayDiff(issue.nextDate)}天`}）`}
+        <div style={{display:"flex",gap:4}}>
+          {!editing&&<button onClick={startEdit} style={{background:s.accentMuted,color:s.accent,fontSize:12,padding:"4px 10px"}}>編輯</button>}
+          <button onClick={onClose} style={{background:"transparent",color:s.muted,fontSize:18,padding:"2px 6px",border:"none"}}>✕</button>
         </div>
       </div>
-      {(issue.notes||"").trim()&&(
-        <div style={{marginBottom:12}}>
-          <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>筆記</div>
-          <div style={{background:s.surface,borderRadius:6,padding:"10px 12px",fontSize:13,color:s.text,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{issue.notes}</div>
-        </div>
-      )}
-      {related.length>0&&(
-        <div style={{marginBottom:12}}>
-          <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>關聯爭點</div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-            {related.map(r=><span key={r.id} onClick={()=>jumpToIssue(r.name)} className="tag" style={{background:s.accentMuted,color:s.accent,cursor:"pointer",padding:"4px 10px",fontSize:12}}>{r.subject} · {r.name}</span>)}
+
+      {!editing ? (
+        <>
+          {(issue.tags||[]).length>0&&<div style={{marginBottom:12,display:"flex",flexWrap:"wrap",gap:4}}>{issue.tags.map(t=><span key={t} className="tag" style={{background:s.tagBg,color:s.tagColor}}>{t}</span>)}</div>}
+          <div style={{marginBottom:12}}>
+            <div style={{display:"flex",gap:3,marginBottom:4}}>{intervals.map((_,idx)=><div key={idx} style={{flex:1,height:6,borderRadius:3,background:idx<issue.stage?s.accent:s.border}}/>)}</div>
+            <div style={{fontSize:12,color:s.muted}}>
+              階段 {Math.min(issue.stage,6)}/6
+              {!issue.mastered&&issue.nextDate&&` · 下次：${issue.nextDate}（${dayDiff(issue.nextDate)===0?"今天":dayDiff(issue.nextDate)>0?`${dayDiff(issue.nextDate)}天後`:`逾期${-dayDiff(issue.nextDate)}天`}）`}
+            </div>
+          </div>
+          {(issue.notes||"").trim()&&(
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>筆記</div>
+              <div style={{background:s.surface,borderRadius:6,padding:"10px 12px",fontSize:13,color:s.text,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{issue.notes}</div>
+            </div>
+          )}
+          {related.length>0&&(
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>關聯爭點</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {related.map(r=><span key={r.id} onClick={()=>jumpToIssue(r.name)} className="tag" style={{background:s.accentMuted,color:s.accent,cursor:"pointer",padding:"4px 10px",fontSize:12}}>{r.subject} · {r.name}</span>)}
+              </div>
+            </div>
+          )}
+          {(issue.errors||[]).length>0&&(
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>錯誤紀錄</div>
+              <div style={{background:s.surface,borderRadius:6,padding:"8px 10px"}}>
+                {issue.errors.map((e,idx)=><div key={idx} style={{fontSize:12,color:s.danger,marginBottom:2}}>{e.date} · {e.reason}</div>)}
+              </div>
+            </div>
+          )}
+          {isDue&&!issue.mastered&&(
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <button onClick={()=>markRemember(issue)} style={{flex:1,background:s.successMuted,color:s.success,padding:"10px",fontSize:14}}>✓ 記住了</button>
+              <button onClick={()=>markForgot(issue)} style={{flex:1,background:s.dangerMuted,color:s.danger,padding:"10px",fontSize:14}}>✗ 還沒熟</button>
+            </div>
+          )}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{fontSize:11,color:s.muted}}>建立日期：{issue.created}</div>
+            {!confirmDel?<button onClick={()=>setConfirmDel(true)} style={{background:"transparent",color:s.danger,border:`1px solid ${s.danger}`,fontSize:11,padding:"4px 10px"}}>刪除爭點</button>
+            :<div style={{display:"flex",gap:4}}><button onClick={()=>{deleteOneIssue(issue.id);onClose();}} style={{background:s.danger,color:"#fff",fontSize:11,padding:"4px 10px"}}>確認刪除</button><button onClick={()=>setConfirmDel(false)} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:11,padding:"4px 10px"}}>取消</button></div>}
+          </div>
+        </>
+      ) : (
+        <div>
+          <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+            <div><Lbl>科目</Lbl><select value={editSubject} onChange={e=>setEditSubject(e.target.value)} style={{width:"auto"}}>{SUBJECTS.map(x=><option key={x}>{x}</option>)}</select></div>
+            <div><Lbl>難度</Lbl><select value={editDiff} onChange={e=>setEditDiff(e.target.value)} style={{width:"auto"}}>{["高","中","低"].map(d=><option key={d}>{d}</option>)}</select></div>
+          </div>
+          <div style={{marginBottom:10}}><Lbl>筆記</Lbl><textarea className="notes-lg" value={editNotes} onChange={e=>setEditNotes(e.target.value)}/></div>
+          <div style={{marginBottom:10}}><Lbl>標籤</Lbl><TagInput tags={editTags} setTags={setEditTags} allTags={allTags}/></div>
+          <Lbl>關聯爭點</Lbl>
+          <SearchInput value={editRelSearch} onChange={setEditRelSearch} placeholder="搜尋爭點…"/>
+          {relSearch.length>0&&<div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:5,marginTop:4,marginBottom:6,maxHeight:120,overflowY:"auto"}}>{relSearch.slice(0,5).map(i=><div key={i.id} onClick={()=>{setEditRel(r=>[...r,i.id]);setEditRelSearch("");}} style={{padding:"7px 10px",cursor:"pointer",fontSize:12}}>{i.subject} · {i.name}</div>)}</div>}
+          <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6,marginBottom:10}}>{editRel.map(id=>{const i=issues.find(x=>x.id===id);if(!i)return null;return <span key={id} className="tag" style={{background:s.accentMuted,color:s.accent,fontSize:11}}>{i.name}<span onClick={()=>setEditRel(r=>r.filter(x=>x!==id))} style={{marginLeft:3,cursor:"pointer",opacity:.7}}>✕</span></span>;})}</div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={saveEdit} style={{background:s.accent,color:"#fff",fontSize:13,padding:"9px 20px"}}>儲存變更</button>
+            <button onClick={()=>setEditing(false)} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:13,padding:"9px 16px"}}>取消</button>
           </div>
         </div>
       )}
-      {(issue.errors||[]).length>0&&(
-        <div style={{marginBottom:12}}>
-          <div style={{fontSize:11,color:s.muted,marginBottom:4,fontWeight:600}}>錯誤紀錄</div>
-          <div style={{background:s.surface,borderRadius:6,padding:"8px 10px"}}>
-            {issue.errors.map((e,idx)=><div key={idx} style={{fontSize:12,color:s.danger,marginBottom:2}}>{e.date} · {e.reason}</div>)}
-          </div>
-        </div>
-      )}
-      <div style={{fontSize:11,color:s.muted,marginTop:8}}>建立日期：{issue.created}</div>
     </div>
   );
 }
@@ -329,7 +414,7 @@ function SearchInput({value,onChange,placeholder}) {
 function TagInput({tags,setTags,allTags}) {
   const [input,setInput]=useState("");
   const suggestions=input.length>=1?allTags.filter(t=>t.includes(input)&&!tags.includes(t)):[];
-  function addTag(t) { const tr=t.trim(); if(tr&&!tags.includes(tr)) setTags([...tags,tr]); setInput(""); }
+  function addTag(t){const tr=t.trim();if(tr&&!tags.includes(tr))setTags([...tags,tr]);setInput("");}
   return (
     <div>
       <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:6}}>
@@ -353,32 +438,53 @@ function RelatedTags({related,jumpToIssue}) {
   );
 }
 
-function Dashboard({issues,todayDue,studyLog,todayMinutes,markRemember,markForgot,getDueDate,jumpToIssue,openIssueDetail}) {
+function Dashboard({issues,todayDue,allDueCount,overflowCount,dailyLimit,updateDailyLimit,studyLog,todayMinutes,markRemember,markForgot,getDueDate,jumpToIssue,openIssueDetail}) {
+  const [showLimitEdit,setShowLimitEdit]=useState(false);
+  const [tempLimit,setTempLimit]=useState(dailyLimit);
   const grouped=SUBJECTS.reduce((acc,sub)=>{const due=todayDue.filter(i=>i.subject===sub);if(due.length)acc[sub]=due;return acc;},{});
   const upcoming=issues.filter(i=>!i.mastered&&dayDiff(getDueDate(i))>0&&dayDiff(getDueDate(i))<=7).sort((a,b)=>getDueDate(a).localeCompare(getDueDate(b)));
   return (
     <div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:22}}>
-        <StatBox label="今日到期" value={todayDue.length} color={s.danger}/>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:12}}>
+        <StatBox label="今日到期" value={`${todayDue.length}/${allDueCount}`} color={s.danger}/>
         <StatBox label="今日複習時間" value={`${todayMinutes} 分`} color={s.accent}/>
         <StatBox label="總爭點數" value={issues.length}/>
         <StatBox label="已掌握" value={issues.filter(i=>i.mastered).length} color={s.success}/>
+      </div>
+      {/* 每日上限設定 */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:20,padding:"8px 12px",background:s.surface,borderRadius:6,border:`1px solid ${s.border}`,flexWrap:"wrap"}}>
+        <span style={{fontSize:12,color:s.muted}}>每日複習上限：</span>
+        {!showLimitEdit ? (
+          <>
+            <span style={{fontSize:14,fontWeight:600,color:s.text}}>{dailyLimit} 題</span>
+            {overflowCount>0&&<span style={{fontSize:11,color:s.danger}}>（{overflowCount} 題延至明天）</span>}
+            <button onClick={()=>{setTempLimit(dailyLimit);setShowLimitEdit(true);}} style={{background:"transparent",color:s.accent,border:`1px solid ${s.accent}`,fontSize:11,padding:"3px 10px",marginLeft:"auto"}}>調整</button>
+          </>
+        ) : (
+          <>
+            <input type="number" value={tempLimit} onChange={e=>setTempLimit(Number(e.target.value))} min={1} max={200} style={{width:60,textAlign:"center",padding:"4px 6px",fontSize:14}}/>
+            <span style={{fontSize:12,color:s.muted}}>題</span>
+            <button onClick={()=>{updateDailyLimit(tempLimit);setShowLimitEdit(false);}} style={{background:s.accent,color:"#fff",fontSize:11,padding:"4px 10px"}}>確認</button>
+            <button onClick={()=>setShowLimitEdit(false)} style={{background:"transparent",color:s.muted,border:`1px solid ${s.border}`,fontSize:11,padding:"4px 10px"}}>取消</button>
+          </>
+        )}
       </div>
       <Sec title="各科掌握率">
         {SUBJECTS.map(sub=>{
           const total=issues.filter(i=>i.subject===sub).length;
           const done=issues.filter(i=>i.subject===sub&&i.mastered).length;
           const pct=total?Math.round(done/total*100):0;
-          return <div key={sub} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><span style={{width:50,fontSize:12,color:s.muted,flexShrink:0}}>{sub}</span><div className="prog" style={{flex:1}}><div className="progf" style={{width:`${pct}%`}}/></div><span style={{fontSize:11,color:s.muted,width:72,textAlign:"right"}}>{done}/{total} ({pct}%)</span></div>;
+          const color=SUBJECT_COLORS[sub]||s.accent;
+          return <div key={sub} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><span style={{width:50,fontSize:12,color:color,fontWeight:600,flexShrink:0}}>{sub}</span><div className="prog" style={{flex:1}}><div className="progf" style={{width:`${pct}%`,background:color}}/></div><span style={{fontSize:11,color:s.muted,width:72,textAlign:"right"}}>{done}/{total} ({pct}%)</span></div>;
         })}
       </Sec>
       {Object.keys(grouped).length>0&&(
-        <Sec title={`今日到期（${todayDue.length}）`}>
+        <Sec title={`今日複習（${todayDue.length}）`}>
           {Object.entries(grouped).map(([sub,list])=>(
             <div key={sub} style={{marginBottom:14}}>
-              <div style={{fontSize:12,fontWeight:600,color:s.accent,marginBottom:6}}>{sub}</div>
+              <div style={{fontSize:12,fontWeight:600,color:SUBJECT_COLORS[sub]||s.accent,marginBottom:6}}>{sub}</div>
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {list.map(i=><IssueRow key={i.id} issue={i} onRemember={markRemember} onForgot={markForgot} issues={issues} jumpToIssue={jumpToIssue} openDetail={openIssueDetail}/>)}
+                {list.map(i=><IssueRow key={i.id} issue={i} onRemember={markRemember} onForgot={markForgot} openDetail={openIssueDetail}/>)}
               </div>
             </div>
           ))}
@@ -387,7 +493,7 @@ function Dashboard({issues,todayDue,studyLog,todayMinutes,markRemember,markForgo
       {upcoming.length>0&&(
         <Sec title="未來 7 天即將到期">
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
-            {upcoming.map(i=>{const d=dayDiff(getDueDate(i));return <div key={i.id} onClick={()=>openIssueDetail(i.id)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,cursor:"pointer"}}><span style={{fontSize:13}}>{i.name}</span><div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><span className="tag" style={{background:s.accentMuted,color:s.accent}}>{i.subject}</span><span style={{fontSize:11,color:s.muted}}>{d}天後</span></div></div>;})}
+            {upcoming.map(i=>{const d=dayDiff(getDueDate(i));return <div key={i.id} onClick={()=>openIssueDetail(i.id)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,cursor:"pointer"}}><span style={{fontSize:13}}>{i.name}</span><div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><SubjectTag subject={i.subject}/><span style={{fontSize:11,color:s.muted}}>{d}天後</span></div></div>;})}
           </div>
         </Sec>
       )}
@@ -395,14 +501,14 @@ function Dashboard({issues,todayDue,studyLog,todayMinutes,markRemember,markForgo
   );
 }
 
-function IssueRow({issue,onRemember,onForgot,issues,jumpToIssue,openDetail}) {
+function IssueRow({issue,onRemember,onForgot,openDetail}) {
   return (
     <div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,overflow:"hidden"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",gap:8,flexWrap:"wrap"}}>
         <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>openDetail(issue.id)}>
           <span style={{fontSize:13,fontWeight:500}}>{issue.name}</span>
-          <span className="tag" style={{marginLeft:6,background:s.accentMuted,color:s.accent}}>{issue.subject}</span>
-          <span className="tag" style={{marginLeft:4,background:"transparent",color:DIFFICULTY_COLORS[issue.difficulty],border:`1px solid ${DIFFICULTY_COLORS[issue.difficulty]}`,fontSize:10}}>{issue.difficulty}</span>
+          <SubjectTag subject={issue.subject}/>
+          <span className="tag" style={{marginLeft:3,background:"transparent",color:DIFFICULTY_COLORS[issue.difficulty],border:`1px solid ${DIFFICULTY_COLORS[issue.difficulty]}`,fontSize:10}}>{issue.difficulty}</span>
           {(issue.tags||[]).length>0&&<span style={{marginLeft:4,fontSize:10,color:s.tagColor}}>🏷{issue.tags.length}</span>}
           {(issue.notes||"").trim()&&<span style={{marginLeft:4,fontSize:10,color:s.muted}}>📝</span>}
         </div>
@@ -424,8 +530,8 @@ function AddIssue({issues,onAdd,setTab,allTags}) {
   const [search,setSearch]=useState("");
   const [related,setRelated]=useState([]);
   const results=search.length>=1?issues.filter(i=>(i.name.includes(search)||i.subject.includes(search))&&!related.includes(i.id)):[];
-  function submit() {
-    if(!name.trim()) return;
+  function submit(){
+    if(!name.trim())return;
     onAdd({name:name.trim(),subject,difficulty,related,notes,tags});
     setName("");setRelated([]);setSearch("");setNotes("");setTags([]);setTab("overview");
   }
@@ -443,7 +549,7 @@ function AddIssue({issues,onAdd,setTab,allTags}) {
           <div>
             <Lbl>關聯爭點</Lbl>
             <SearchInput value={search} onChange={setSearch} placeholder="搜尋現有爭點…"/>
-            {results.length>0&&<div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,marginTop:4,maxHeight:160,overflowY:"auto"}}>{results.slice(0,8).map(i=><div key={i.id} onClick={()=>{setRelated(r=>[...r,i.id]);setSearch("");}} style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${s.border}`,fontSize:13}}><span style={{color:s.accent}}>{i.subject}</span> · {i.name}</div>)}</div>}
+            {results.length>0&&<div style={{background:s.surface,border:`1px solid ${s.border}`,borderRadius:6,marginTop:4,maxHeight:160,overflowY:"auto"}}>{results.slice(0,8).map(i=><div key={i.id} onClick={()=>{setRelated(r=>[...r,i.id]);setSearch("");}} style={{padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${s.border}`,fontSize:13}}><SubjectTag subject={i.subject}/> <span style={{marginLeft:4}}>{i.name}</span></div>)}</div>}
             <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:6}}>
               {related.map(id=>{const i=issues.find(x=>x.id===id);if(!i)return null;return <span key={id} className="tag" style={{background:s.accentMuted,color:s.accent,padding:"3px 8px"}}>{i.name}<span onClick={()=>setRelated(r=>r.filter(x=>x!==id))} style={{marginLeft:4,cursor:"pointer",opacity:.7}}>✕</span></span>;})}
             </div>
@@ -477,11 +583,8 @@ function Overview({issues,markRemember,markForgot,isDueToday,editIssue,deleteIss
   else if(statusFilter==="進行中") filtered=filtered.filter(i=>!i.mastered&&!isDueToday(i));
   else if(statusFilter==="已掌握") filtered=filtered.filter(i=>i.mastered);
   if(tagFilter!=="全部") filtered=filtered.filter(i=>(i.tags||[]).includes(tagFilter));
-  if(searchQuery.trim()) {
-    const q=searchQuery.trim().toLowerCase();
-    filtered=filtered.filter(i=>i.name.toLowerCase().includes(q)||i.subject.includes(q)||(i.notes||"").toLowerCase().includes(q)||(i.tags||[]).some(t=>t.includes(q)));
-  }
-  filtered = sortIssues(filtered, sortBy);
+  if(searchQuery.trim()){const q=searchQuery.trim().toLowerCase();filtered=filtered.filter(i=>i.name.toLowerCase().includes(q)||i.subject.includes(q)||(i.notes||"").toLowerCase().includes(q)||(i.tags||[]).some(t=>t.includes(q)));}
+  filtered=sortIssues(filtered,sortBy);
 
   function toggleSelect(id){setSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n;});}
   function selectAll(){if(selected.size===filtered.length)setSelected(new Set());else setSelected(new Set(filtered.map(i=>i.id)));}
@@ -549,7 +652,7 @@ function IssueCard({issue,issues,isDue,onRemember,onForgot,editing,setEditing,ed
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:6,marginBottom:9}}>
             <div>
               <span style={{fontWeight:600,fontSize:14}}>{issue.name}</span>
-              <span className="tag" style={{marginLeft:6,background:s.accentMuted,color:s.accent}}>{issue.subject}</span>
+              <span style={{marginLeft:6}}><SubjectTag subject={issue.subject}/></span>
               <span className="tag" style={{marginLeft:3,background:"transparent",color:DIFFICULTY_COLORS[issue.difficulty],border:`1px solid ${DIFFICULTY_COLORS[issue.difficulty]}`,fontSize:10}}>{issue.difficulty}</span>
               {issue.mastered&&<span className="tag" style={{marginLeft:3,background:s.successMuted,color:s.success}}>已掌握</span>}
               {isDue&&!issue.mastered&&<span className="tag" style={{marginLeft:3,background:s.dangerMuted,color:s.danger}}>今日到期</span>}
@@ -632,7 +735,8 @@ function Stats({issues,studyLog}) {
           const total=issues.filter(i=>i.subject===sub).length;
           const done=issues.filter(i=>i.subject===sub&&i.mastered).length;
           const pct=total?Math.round(done/total*100):0;
-          return <div key={sub} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><span style={{width:50,fontSize:12,color:s.muted,flexShrink:0}}>{sub}</span><div className="prog" style={{flex:1}}><div className="progf" style={{width:`${pct}%`,background:pct===100?s.success:s.accent}}/></div><span style={{fontSize:11,color:s.muted,width:80,textAlign:"right"}}>{done}/{total}（{pct}%）</span></div>;
+          const color=SUBJECT_COLORS[sub]||s.accent;
+          return <div key={sub} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><span style={{width:50,fontSize:12,color:color,fontWeight:600,flexShrink:0}}>{sub}</span><div className="prog" style={{flex:1}}><div className="progf" style={{width:`${pct}%`,background:color}}/></div><span style={{fontSize:11,color:s.muted,width:80,textAlign:"right"}}>{done}/{total}（{pct}%）</span></div>;
         })}
       </Sec>
       <Sec title="每日複習時間（近 30 天）">
@@ -648,7 +752,7 @@ function Stats({issues,studyLog}) {
       </Sec>
       {confused.length>0&&(
         <Sec title="高頻混淆爭點">
-          {confused.map(i=>(<div key={i.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${s.border}`,fontSize:13}}><span>{i.name}<span className="tag" style={{marginLeft:6,background:s.accentMuted,color:s.accent}}>{i.subject}</span></span><span style={{color:s.danger,fontWeight:600,flexShrink:0}}>{i.cc} 次</span></div>))}
+          {confused.map(i=>(<div key={i.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${s.border}`,fontSize:13}}><span>{i.name}<span style={{marginLeft:6}}><SubjectTag subject={i.subject}/></span></span><span style={{color:s.danger,fontWeight:600,flexShrink:0}}>{i.cc} 次</span></div>))}
         </Sec>
       )}
     </div>
